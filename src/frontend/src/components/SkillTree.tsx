@@ -9,6 +9,10 @@ import {
   CAREER_STAGES,
   CAREER_STAGE_NAMES,
   type CareerStage,
+  SKILL_MAX,
+  levelFromXp,
+  xpForLevel,
+  xpForNextLevel,
 } from "../types/game";
 
 interface Props {
@@ -22,35 +26,35 @@ const SKILL_DEFS = [
     key: "speed",
     label: "Speed",
     emoji: "Speed",
-    desc: "Increases base run speed",
+    desc: "+0.8 tiles/sec per rank (max +8)",
     color: "#FFD700",
   },
   {
     key: "power",
     label: "Power",
     emoji: "Power",
-    desc: "Break crates automatically, power through tackles",
+    desc: "Rank 1: auto-break crates • Rank 5: DE bounce • Rank 8: break any defender",
     color: "#C63A3A",
   },
   {
     key: "agility",
     label: "Agility",
     emoji: "Agil",
-    desc: "Faster lane switching",
+    desc: "+8% lane switch speed per rank",
     color: "#3FAE5A",
   },
   {
     key: "spin",
     label: "Spin",
     emoji: "Spin",
-    desc: "Longer spin invincibility window",
+    desc: "+12 frames duration per rank • Rank 5+: wider hit zone",
     color: "#2E7BD6",
   },
   {
     key: "hurdle",
     label: "Hurdle",
     emoji: "Jump",
-    desc: "Higher jump, clears taller obstacles",
+    desc: "+0.35 jump power per rank (max +3.5)",
     color: "#D4A017",
   },
 ] as const;
@@ -62,8 +66,6 @@ const CAREER_XP_REQS: Record<CareerStage, number> = {
   SuperBowl: 3000,
   HallOfFame: 6000,
 };
-
-const SKILL_NODE_IDS = ["n1", "n2", "n3", "n4", "n5"];
 
 export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
   const upgradeSkill = useUpgradeSkill();
@@ -79,16 +81,26 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
   const canAdvance =
     nextStage && profile.xp >= (nextXpReq ?? Number.POSITIVE_INFINITY);
 
+  // Level calculations using new RPG formula
+  const currentLevel = levelFromXp(profile.xp);
+  const xpCurrentLevel = xpForLevel(currentLevel);
+  const xpNext = xpForNextLevel(currentLevel);
+  const progressInLevel = profile.xp - xpCurrentLevel;
+  const neededForNext = xpNext - xpCurrentLevel;
+  const levelPct =
+    neededForNext > 0
+      ? Math.min(100, (progressInLevel / neededForNext) * 100)
+      : 100;
+
   const handleUpgrade = async (skillKey: string) => {
     if (profile.skillPoints <= 0) {
       toast.error("No skill points available!");
       return;
     }
     if (!isLoggedIn) {
-      // Local upgrade (not logged in)
       const currentLevel =
         profile.skills[skillKey as keyof typeof profile.skills];
-      if (currentLevel >= 5) return;
+      if (currentLevel >= SKILL_MAX) return;
       const updatedProfile: PlayerProfile = {
         ...profile,
         skillPoints: profile.skillPoints - 1,
@@ -99,11 +111,10 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
       };
       onProfileUpdate?.(updatedProfile);
       toast.success(
-        `${skillKey.charAt(0).toUpperCase()}${skillKey.slice(1)} upgraded!`,
+        `${skillKey.charAt(0).toUpperCase()}${skillKey.slice(1)} upgraded to Rank ${currentLevel + 1}!`,
       );
       return;
     }
-    // Backend upgrade (logged in)
     try {
       const updated = await upgradeSkill.mutateAsync(skillKey);
       onProfileUpdate?.(updated);
@@ -167,12 +178,13 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
             className="font-display text-3xl font-bold"
             style={{ color: "#2E7BD6" }}
           >
-            Lv.{profile.level}
+            Lv.{currentLevel}
           </div>
           <div className="text-xs text-muted-foreground">{profile.xp} XP</div>
         </div>
       </div>
 
+      {/* Level progress bar using new formula */}
       <div
         className="mb-6 p-3 rounded-lg"
         style={{
@@ -182,16 +194,26 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
       >
         <div className="flex justify-between text-xs text-muted-foreground mb-1">
           <span>Level Progress</span>
-          <span>{profile.xp % 100}/100 XP to next level</span>
+          <span>
+            {progressInLevel}/{neededForNext} XP to Lv.{currentLevel + 1}
+          </span>
         </div>
-        <Progress value={profile.xp % 100} className="h-2" />
+        <Progress value={levelPct} className="h-2" />
+        <div className="text-xs text-muted-foreground mt-1 text-center">
+          Next level at {xpNext} total XP
+        </div>
       </div>
 
       <div className="space-y-3 mb-6">
         {SKILL_DEFS.map((skill) => {
-          const currentLevel = profile.skills[skill.key];
-          const canUpgrade = profile.skillPoints > 0 && currentLevel < 5;
+          const currentSkillLevel = profile.skills[skill.key];
+          const canUpgrade =
+            profile.skillPoints > 0 && currentSkillLevel < SKILL_MAX;
           const isHovered = hoveredSkill === skill.key;
+          const maxed = currentSkillLevel >= SKILL_MAX;
+
+          // Build rank pip indicators (10 pips max)
+          const pips = Array.from({ length: SKILL_MAX }, (_, i) => i);
 
           return (
             <div
@@ -202,7 +224,13 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
                 background: isHovered
                   ? "rgba(255,255,255,0.06)"
                   : "rgba(255,255,255,0.03)",
-                border: `1px solid ${isHovered ? `${skill.color}40` : "rgba(255,255,255,0.06)"}`,
+                border: `1px solid ${
+                  maxed
+                    ? `${skill.color}80`
+                    : isHovered
+                      ? `${skill.color}40`
+                      : "rgba(255,255,255,0.06)"
+                }`,
               }}
               onMouseEnter={() => setHoveredSkill(skill.key)}
               onMouseLeave={() => setHoveredSkill(null)}
@@ -227,49 +255,55 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
                       variant="outline"
                       style={{
                         fontSize: 9,
-                        borderColor: `${skill.color}60`,
-                        color: skill.color,
+                        borderColor: maxed
+                          ? `${skill.color}90`
+                          : `${skill.color}60`,
+                        color: maxed ? skill.color : `${skill.color}AA`,
+                        background: maxed ? `${skill.color}15` : "transparent",
                       }}
                     >
-                      {currentLevel}/5
+                      {maxed ? "MAX" : `${currentSkillLevel}/${SKILL_MAX}`}
                     </Badge>
                   </div>
-                  <div className="flex gap-1 mb-1">
-                    {SKILL_NODE_IDS.map((nodeId, i) => (
+                  {/* 10-pip rank display */}
+                  <div className="flex gap-0.5 mb-1 flex-wrap">
+                    {pips.map((i) => (
                       <button
                         type="button"
-                        key={nodeId}
+                        key={`pip-${i}`}
                         data-ocid={`skill_tree.${skill.key}.toggle`}
                         onClick={() =>
-                          i >= currentLevel &&
+                          i >= currentSkillLevel &&
                           canUpgrade &&
                           handleUpgrade(skill.key)
                         }
-                        disabled={i < currentLevel || !canUpgrade}
-                        className="skill-node transition-all"
+                        disabled={i < currentSkillLevel || !canUpgrade}
                         style={{
-                          width: 20,
-                          height: 20,
-                          borderRadius: 4,
+                          width: 16,
+                          height: 16,
+                          borderRadius: 3,
                           border: "none",
                           cursor:
-                            i >= currentLevel && canUpgrade
+                            i >= currentSkillLevel && canUpgrade
                               ? "pointer"
                               : "default",
                           background:
-                            i < currentLevel
-                              ? `radial-gradient(circle, ${skill.color} 0%, ${skill.color}88 100%)`
-                              : i === currentLevel && canUpgrade
+                            i < currentSkillLevel
+                              ? i < 5
+                                ? `radial-gradient(circle, ${skill.color} 0%, ${skill.color}88 100%)`
+                                : `radial-gradient(circle, ${skill.color}FF 0%, ${skill.color} 100%)`
+                              : i === currentSkillLevel && canUpgrade
                                 ? "rgba(255,255,255,0.12)"
                                 : "rgba(42,49,56,0.8)",
                           boxShadow:
-                            i < currentLevel
-                              ? `0 0 6px ${skill.color}60`
+                            i < currentSkillLevel
+                              ? `0 0 4px ${skill.color}60`
                               : "none",
                           transform:
-                            i === currentLevel && canUpgrade
-                              ? "scale(1.1)"
+                            i === currentSkillLevel && canUpgrade
+                              ? "scale(1.15)"
                               : "scale(1)",
+                          transition: "all 0.1s ease",
                         }}
                       />
                     ))}
@@ -295,6 +329,18 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
                   >
                     +1
                   </Button>
+                )}
+                {maxed && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: skill.color,
+                      fontFamily: "monospace",
+                      fontWeight: 700,
+                    }}
+                  >
+                    MAX
+                  </span>
                 )}
               </div>
             </div>
@@ -322,7 +368,9 @@ export function SkillTree({ profile, onProfileUpdate, isLoggedIn }: Props) {
                   i <= currentStageIdx
                     ? "linear-gradient(135deg, #3FAE5A, #2A8040)"
                     : "rgba(42,49,56,0.8)",
-                border: `1px solid ${i <= currentStageIdx ? "#3FAE5A40" : "rgba(255,255,255,0.06)"}`,
+                border: `1px solid ${
+                  i <= currentStageIdx ? "#3FAE5A40" : "rgba(255,255,255,0.06)"
+                }`,
                 fontSize: 7,
                 fontWeight: 700,
                 color: i <= currentStageIdx ? "#FFF" : "#4A545D",

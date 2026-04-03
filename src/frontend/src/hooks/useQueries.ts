@@ -171,6 +171,8 @@ function convertProfile(raw: any): PlayerProfile {
       hurdle: Number(raw?.skills?.hurdle ?? 0),
     },
     displayName: raw?.displayName ?? "Player",
+    teamName: raw?.teamName ?? "Pixel FC",
+    jerseyNumber: Number(raw?.jerseyNumber ?? 32),
   };
 }
 

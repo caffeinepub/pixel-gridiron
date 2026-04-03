@@ -21,16 +21,26 @@ import GameCanvas from "./components/GameCanvas";
 import { HowToPlay } from "./components/HowToPlay";
 import { Leaderboard } from "./components/Leaderboard";
 import { Legends } from "./components/Legends";
+import { PasswordSave } from "./components/PasswordSave";
 import { SkillTree } from "./components/SkillTree";
 import { useAddXp, usePlayerProfile, useSubmitScore } from "./hooks/useQueries";
 import {
   type GameState,
+  type PlayResult,
   type PlayerProfile,
-  createInitialGameState,
+  createGameState,
   defaultProfile,
+  levelFromXp,
+  xpForNextLevel,
 } from "./types/game";
 
-type Screen = "game" | "leaderboard" | "skill_tree" | "legends" | "how_to_play";
+type Screen =
+  | "game"
+  | "leaderboard"
+  | "skill_tree"
+  | "legends"
+  | "how_to_play"
+  | "password";
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("game");
@@ -46,8 +56,11 @@ export default function App() {
   const [localProfile, setLocalProfile] =
     useState<PlayerProfile>(defaultProfile);
 
+  // Play result state (tackled but not game over)
+  const [showPlayResult, setShowPlayResult] = useState(false);
+  const [playResult, setPlayResult] = useState<PlayResult | null>(null);
+
   // Separate tick state so we can force a re-render when game state changes
-  // (running/paused/gameOver) without mutating React state inside the game loop.
   const [gameTick, setGameTick] = useState(0);
   const forceUpdate = useCallback(() => setGameTick((t) => t + 1), []);
 
@@ -63,19 +76,16 @@ export default function App() {
 
   const profile = backendProfile ?? localProfile;
 
-  const gameStateRef = useRef<GameState>(createInitialGameState(profile));
+  const gameStateRef = useRef<GameState>(createGameState(profile));
   const canvasRef = useRef<GameCanvasHandle | null>(null);
 
-  // Always read live state from the ref, never cache gs at render scope
   const getGs = () => gameStateRef.current;
 
   const syncGameState = useCallback((p: PlayerProfile) => {
     const gs = gameStateRef.current;
-    // Always sync skills regardless of running state — this is the fix for
-    // skill points not taking effect in-game.
     gs.skills = { ...p.skills };
     gs.careerStage = p.careerStage;
-    if (!gs.running) {
+    if (gs.phase !== "playing") {
       gs.hp = p.hp;
       gs.xp = p.xp;
       gs.level = p.level;
@@ -88,27 +98,28 @@ export default function App() {
 
   const handleStart = () => {
     const gs = gameStateRef.current;
-    if (!gs.running && !gs.gameOver) {
-      gs.running = true;
-      gs.paused = false;
-    } else if (gs.paused) {
-      gs.paused = false;
-      gs.running = true;
-    } else if (gs.running) {
-      gs.paused = true;
+    if (gs.phase === "idle") {
+      gs.phase = "playing";
+    } else if (gs.phase === "playing") {
+      gs.phase = "paused";
+    } else if (gs.phase === "paused") {
+      gs.phase = "playing";
+    } else if (gs.phase === "tackled") {
+      /* handled by NEXT PLAY button */ return;
     }
     forceUpdate();
   };
 
   const handleRestart = useCallback(() => {
-    const fresh = createInitialGameState(profile);
+    const fresh = createGameState(profile);
     fresh.activeLegend = activeLegend;
-    // Replace the contents of the ref so the existing RAF loop picks it up
     gameStateRef.current = fresh;
     setScore(0);
     setHp(profile.hp);
     setXp(profile.xp);
     setShowGameOver(false);
+    setShowPlayResult(false);
+    setPlayResult(null);
     forceUpdate();
   }, [profile, activeLegend, forceUpdate]);
 
@@ -118,20 +129,61 @@ export default function App() {
     setXp(x);
   }, []);
 
-  const handleGameOver = useCallback(
-    (finalScore: number, xpGained: number) => {
-      setGameOverScore(finalScore);
-      setGameOverXp(xpGained);
-      setShowGameOver(true);
+  // Called when a tackle ends the play (not game over)
+  const handleTackled = useCallback(
+    (yards: number, xpGained: number, items: string[]) => {
+      const newXp = localProfile.xp + xpGained;
+      const newLevel = levelFromXp(newXp);
+      const leveledUp = newLevel > localProfile.level;
+      const bonusPoints = leveledUp ? newLevel - localProfile.level : 0;
+
+      const updatedProfile: PlayerProfile = {
+        ...localProfile,
+        xp: newXp,
+        level: newLevel,
+        skillPoints: localProfile.skillPoints + bonusPoints,
+        highScore: Math.max(localProfile.highScore, score),
+      };
+      setLocalProfile(updatedProfile);
+      qc.setQueryData(["profile"], updatedProfile);
+
+      if (isLoggedIn) {
+        addXp.mutateAsync(xpGained).catch(() => {});
+      }
+
+      setPlayResult({
+        yards,
+        xpGained,
+        items,
+        leveledUp,
+        newLevel,
+        touchdown: false,
+      });
+      setShowPlayResult(true);
       forceUpdate();
     },
-    [forceUpdate],
+    [localProfile, isLoggedIn, score, addXp, qc, forceUpdate],
   );
+
+  const handleNextPlay = useCallback(() => {
+    const careerYards =
+      (gameStateRef.current.careerYards || 0) + (playResult?.yards || 0);
+    const fresh = createGameState(profile);
+    fresh.activeLegend = activeLegend;
+    fresh.careerYards = careerYards;
+    gameStateRef.current = fresh;
+    setScore(0);
+    setHp(profile.hp);
+    setXp(profile.xp);
+    setShowPlayResult(false);
+    setPlayResult(null);
+    forceUpdate();
+  }, [profile, activeLegend, playResult, forceUpdate]);
 
   const handleSaveScore = async () => {
     const name = playerName.trim() || profile.displayName || "Player";
     const newXp = localProfile.xp + gameOverXp;
-    const newLevel = Math.floor(newXp / 100) + 1;
+    const newLevel = levelFromXp(newXp);
     const bonusPoints =
       newLevel > localProfile.level ? newLevel - localProfile.level : 0;
     const updatedLocal: PlayerProfile = {
@@ -173,18 +225,23 @@ export default function App() {
     gameStateRef.current.activeLegend = legendId;
   };
 
-  // Read live values from ref every render (gameTick ensures re-render when needed)
   const gs = gameStateRef.current;
   const hpPct = Math.max(0, (hp / 100) * 100);
-  const xpPct = Math.max(0, ((xp % 100) / 100) * 100);
+  const currentLevel = levelFromXp(xp);
+  const xpThisLevel =
+    xp - (currentLevel > 1 ? (currentLevel - 1) * (currentLevel - 1) * 50 : 0);
+  const xpNeeded =
+    xpForNextLevel(currentLevel) -
+    (currentLevel > 1 ? (currentLevel - 1) * (currentLevel - 1) * 50 : 0);
+  const xpPct = Math.max(0, Math.min(100, (xpThisLevel / xpNeeded) * 100));
   const hpColor = hp > 50 ? "#3FAE5A" : hp > 25 ? "#D4A017" : "#C63A3A";
 
-  // Suppress unused var warning — gameTick is read to force renders
   void gameTick;
 
   const NAV_ITEMS: { id: Screen; label: string }[] = [
     { id: "skill_tree", label: "SKILL TREE" },
     { id: "legends", label: "LEGENDS" },
+    { id: "password", label: "PASSWORD SAVE" },
     { id: "leaderboard", label: "LEADERBOARD" },
     { id: "how_to_play", label: "HOW TO PLAY" },
   ];
@@ -227,7 +284,7 @@ export default function App() {
         ref={canvasRef}
         gameStateRef={gameStateRef}
         onScoreUpdate={handleScoreUpdate}
-        onGameOver={handleGameOver}
+        onTackled={handleTackled}
       />
 
       {/* HUD overlay — top bar */}
@@ -336,7 +393,7 @@ export default function App() {
             <span
               style={{ fontSize: 9, color: "#2E7BD6", fontFamily: "monospace" }}
             >
-              Lv.{profile.level}
+              Lv.{currentLevel}
             </span>
           </div>
           <div
@@ -389,22 +446,28 @@ export default function App() {
           right: 10,
           width: 80,
           height: 36,
-          background: getGs().running
-            ? "rgba(42,80,60,0.7)"
-            : "rgba(63,174,90,0.85)",
+          background:
+            getGs().phase === "playing"
+              ? "rgba(42,80,60,0.7)"
+              : "rgba(63,174,90,0.85)",
           borderRadius: 8,
-          border: `1px solid ${getGs().running ? "rgba(63,174,90,0.4)" : "#60CF80"}`,
+          border: `1px solid ${
+            getGs().phase === "playing" ? "rgba(63,174,90,0.4)" : "#60CF80"
+          }`,
           color: "#FFF",
           fontSize: 11,
           letterSpacing: "0.08em",
         }}
         onPointerDown={(e) => {
           e.preventDefault();
-          if (getGs().gameOver) handleRestart();
-          else handleStart();
+          handleStart();
         }}
       >
-        {getGs().running ? "PAUSE" : getGs().gameOver ? "RETRY" : "START"}
+        {getGs().phase === "playing"
+          ? "PAUSE"
+          : getGs().phase === "paused"
+            ? "RESUME"
+            : "START"}
       </button>
 
       {/* LEFT arrow — bottom left */}
@@ -424,6 +487,7 @@ export default function App() {
         }}
         {...makePointerHandlers(() => canvasRef.current?.pressLeft())}
         aria-label="Move left"
+        data-ocid="game.left.button"
       >
         ◀
       </button>
@@ -445,6 +509,7 @@ export default function App() {
         }}
         {...makePointerHandlers(() => canvasRef.current?.pressRight())}
         aria-label="Move right"
+        data-ocid="game.right.button"
       >
         ▶
       </button>
@@ -458,7 +523,7 @@ export default function App() {
           right: 92,
           width: 72,
           height: 52,
-          background: gs.playerSpinning
+          background: gs.spinning
             ? "rgba(46,123,214,0.7)"
             : "rgba(46,123,214,0.45)",
           borderRadius: "50%",
@@ -466,12 +531,11 @@ export default function App() {
           color: "#fff",
           fontSize: 11,
           letterSpacing: "0.05em",
-          boxShadow: gs.playerSpinning
-            ? "0 0 16px rgba(46,123,214,0.8)"
-            : "none",
+          boxShadow: gs.spinning ? "0 0 16px rgba(46,123,214,0.8)" : "none",
         }}
         {...makePointerHandlers(() => canvasRef.current?.pressSpin())}
         aria-label="Spin move"
+        data-ocid="game.spin.button"
       >
         SPIN
       </button>
@@ -497,6 +561,7 @@ export default function App() {
         }}
         {...makePointerHandlers(() => canvasRef.current?.pressTurbo())}
         aria-label="Turbo boost"
+        data-ocid="game.turbo.button"
       >
         TURBO
       </button>
@@ -519,6 +584,7 @@ export default function App() {
         }}
         {...makePointerHandlers(() => canvasRef.current?.pressHurdle())}
         aria-label="Hurdle jump"
+        data-ocid="game.hurdle.button"
       >
         HURDLE
       </button>
@@ -612,6 +678,7 @@ export default function App() {
             <button
               key={item.id}
               type="button"
+              data-ocid={`menu.${item.id}.button`}
               style={{
                 width: 240,
                 padding: "14px 0",
@@ -643,6 +710,7 @@ export default function App() {
 
           <button
             type="button"
+            data-ocid="menu.back.button"
             style={{
               marginTop: 8,
               width: 240,
@@ -697,6 +765,7 @@ export default function App() {
           >
             <button
               type="button"
+              data-ocid="nav.back.button"
               onClick={() => setScreen("game")}
               style={{
                 background: "none",
@@ -726,6 +795,7 @@ export default function App() {
               {screen === "legends" && "LEGENDS"}
               {screen === "leaderboard" && "LEADERBOARD"}
               {screen === "how_to_play" && "HOW TO PLAY"}
+              {screen === "password" && "PASSWORD SAVE"}
             </span>
           </div>
 
@@ -746,10 +816,246 @@ export default function App() {
             />
           )}
           {screen === "how_to_play" && <HowToPlay />}
+          {screen === "password" && (
+            <PasswordSave
+              profile={profile}
+              onLoad={(loaded) => {
+                handleProfileUpdate({
+                  ...loaded,
+                  displayName: profile.displayName,
+                  teamName: profile.teamName,
+                  jerseyNumber: profile.jerseyNumber,
+                });
+              }}
+            />
+          )}
         </div>
       )}
 
-      {/* Game Over dialog */}
+      {/* Play Result overlay (tackled — not game over) */}
+      {showPlayResult && playResult && (
+        <div
+          data-ocid="play_result.panel"
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,0,0,0.92)",
+            zIndex: 60,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: "monospace",
+              fontSize: 28,
+              fontWeight: 800,
+              color: "#C63A3A",
+              letterSpacing: "0.12em",
+            }}
+          >
+            TACKLED!
+          </div>
+
+          {playResult.leveledUp && (
+            <div
+              style={{
+                fontFamily: "monospace",
+                fontSize: 16,
+                fontWeight: 700,
+                color: "#FFD700",
+                letterSpacing: "0.1em",
+              }}
+            >
+              ⭐ LEVEL UP! → Lv.{playResult.newLevel}
+            </div>
+          )}
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 12,
+              width: 280,
+            }}
+          >
+            <div
+              style={{
+                background: "rgba(63,174,90,0.12)",
+                border: "1px solid rgba(63,174,90,0.3)",
+                borderRadius: 10,
+                padding: 16,
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 28,
+                  fontWeight: 800,
+                  color: "#3FAE5A",
+                }}
+              >
+                {playResult.yards}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "#6A7480",
+                  fontFamily: "monospace",
+                }}
+              >
+                YARDS
+              </div>
+            </div>
+            <div
+              style={{
+                background: "rgba(46,123,214,0.12)",
+                border: "1px solid rgba(46,123,214,0.3)",
+                borderRadius: 10,
+                padding: 16,
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 28,
+                  fontWeight: 800,
+                  color: "#2E7BD6",
+                }}
+              >
+                +{playResult.xpGained}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "#6A7480",
+                  fontFamily: "monospace",
+                }}
+              >
+                XP GAINED
+              </div>
+            </div>
+          </div>
+
+          {playResult.items.length > 0 && (
+            <div
+              style={{
+                fontFamily: "monospace",
+                fontSize: 22,
+                letterSpacing: 4,
+              }}
+            >
+              {playResult.items.join(" ")}
+            </div>
+          )}
+
+          {/* XP bar showing new level progress */}
+          <div style={{ width: 280 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                marginBottom: 4,
+                fontSize: 11,
+                color: "#6A7480",
+                fontFamily: "monospace",
+              }}
+            >
+              <span>Lv.{profile.level}</span>
+              <span>
+                {profile.xp} / {xpForNextLevel(profile.level)} XP
+              </span>
+            </div>
+            <div
+              style={{
+                height: 8,
+                background: "rgba(255,255,255,0.08)",
+                borderRadius: 4,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  background: "#2E7BD6",
+                  borderRadius: 4,
+                  width: `${Math.min(100, (profile.xp / xpForNextLevel(profile.level)) * 100)}%`,
+                  transition: "width 0.6s ease",
+                }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+            <button
+              type="button"
+              data-ocid="play_result.next.button"
+              onClick={handleNextPlay}
+              style={{
+                fontFamily: "monospace",
+                fontWeight: 800,
+                fontSize: 16,
+                background: "linear-gradient(135deg, #3FAE5A, #2A8040)",
+                color: "#FFF",
+                border: "none",
+                borderRadius: 12,
+                padding: "14px 36px",
+                letterSpacing: "0.1em",
+                cursor: "pointer",
+              }}
+            >
+              ▶ NEXT PLAY
+            </button>
+            <button
+              type="button"
+              data-ocid="play_result.save.button"
+              onClick={() => {
+                setShowPlayResult(false);
+                setShowGameOver(true);
+                setGameOverScore(score);
+                setGameOverXp(playResult.xpGained);
+              }}
+              style={{
+                fontFamily: "monospace",
+                fontWeight: 700,
+                fontSize: 12,
+                background: "rgba(255,255,255,0.06)",
+                color: "#A9B0B6",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: 12,
+                padding: "14px 20px",
+                letterSpacing: "0.08em",
+                cursor: "pointer",
+              }}
+            >
+              SAVE SCORE
+            </button>
+          </div>
+
+          {/* Career stats */}
+          <div
+            style={{
+              fontFamily: "monospace",
+              fontSize: 11,
+              color: "#4A545D",
+              textAlign: "center",
+            }}
+          >
+            CAREER:{" "}
+            {(
+              gameStateRef.current.careerYards + playResult.yards
+            ).toLocaleString()}{" "}
+            TOTAL YARDS
+          </div>
+        </div>
+      )}
+
+      {/* Game Over dialog (save score) */}
       <Dialog
         open={showGameOver}
         onOpenChange={(open) => !open && setShowGameOver(false)}
