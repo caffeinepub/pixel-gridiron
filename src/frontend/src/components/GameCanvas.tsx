@@ -130,6 +130,9 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     pressHurdle,
   }));
 
+  // Track the last gameStateRef identity so we know when a restart happened
+  const lastGsRef = useRef<GameState | null>(null);
+
   const loop = useCallback(
     (timestamp: number) => {
       const canvas = canvasRef.current;
@@ -142,6 +145,7 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
 
       const gs = gameStateRef.current;
 
+      // Always draw and always re-queue -- loop NEVER dies
       if (!gs.running || gs.paused) {
         drawFrame(ctx, gs);
         rafRef.current = requestAnimationFrame(loop);
@@ -152,11 +156,13 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
       drawFrame(ctx, gs);
       onScoreUpdate(gs.score, gs.hp, gs.xp);
 
-      if (gs.gameOver) {
+      // Fire game-over callback exactly once per game instance
+      if (gs.gameOver && lastGsRef.current !== gs) {
+        lastGsRef.current = gs;
         onGameOver(gs.score, gs.xpGained);
-        return;
       }
 
+      // Always keep the loop alive
       rafRef.current = requestAnimationFrame(loop);
     },
     [gameStateRef, onScoreUpdate, onGameOver],
@@ -1220,22 +1226,45 @@ function drawPlayerRearView(
     ctx.shadowBlur = 8 * S;
   }
 
-  // ── Legs (rear view: legs go downward from behind) ────────────────────────
-  // Legs swing fore/aft relative to each other
-  const legSwing = Math.sin(runPhase) * 6 * S;
+  // ── Legs (rear view: depth-based stride, no lateral scissor) ────────────
+  // From behind: legs pump forward/back. Forward leg foreshortens (shorter,
+  // higher up). Back leg extends (taller, lower). Alternates each half-cycle.
+  const stride = Math.sin(runPhase); // -1 to +1
   const legW = 5 * S;
-  const legH = 10 * S;
+  const legBaseH = 10 * S;
 
+  // Left leg: forward when stride > 0
+  const leftForward = stride > 0;
+  const leftH = leftForward ? legBaseH * 0.7 : legBaseH; // foreshorten when forward
+  const leftYOffset = leftForward ? -3 * S : 0; // lift up when forward
+  const leftAlpha = leftForward ? 0.75 : 1.0; // slightly lighter when forward (depth)
+
+  // Right leg: opposite phase
+  const rightForward = !leftForward;
+  const rightH = rightForward ? legBaseH * 0.7 : legBaseH;
+  const rightYOffset = rightForward ? -3 * S : 0;
+  const rightAlpha = rightForward ? 0.75 : 1.0;
+
+  // Draw back leg first (left when not forward), then front leg on top
   // Left leg
+  ctx.save();
+  ctx.globalAlpha = (isTrail ? 0.5 : 1.0) * leftAlpha;
   ctx.fillStyle = "#222244";
-  ctx.fillRect(x - 5 * S + legSwing * 0.5, y - legH + 2 * S, legW, legH);
-  // Right leg (opposite phase)
-  ctx.fillRect(x + 0 * S - legSwing * 0.5, y - legH + 2 * S, legW, legH);
-
-  // ── Cleats ───────────────────────────────────────────────────────────────
+  ctx.fillRect(x - 5 * S, y - leftH + 2 * S + leftYOffset, legW, leftH);
+  // Left cleat
   ctx.fillStyle = "#111111";
-  ctx.fillRect(x - 6 * S + legSwing * 0.5, y - 1 * S, legW + 2 * S, 3 * S);
-  ctx.fillRect(x - 1 * S - legSwing * 0.5, y - 1 * S, legW + 2 * S, 3 * S);
+  ctx.fillRect(x - 6 * S, y - 1 * S + leftYOffset, legW + 2 * S, 3 * S);
+  ctx.restore();
+
+  // Right leg
+  ctx.save();
+  ctx.globalAlpha = (isTrail ? 0.5 : 1.0) * rightAlpha;
+  ctx.fillStyle = "#222244";
+  ctx.fillRect(x + 0 * S, y - rightH + 2 * S + rightYOffset, legW, rightH);
+  // Right cleat
+  ctx.fillStyle = "#111111";
+  ctx.fillRect(x - 1 * S, y - 1 * S + rightYOffset, legW + 2 * S, 3 * S);
+  ctx.restore();
 
   // ── Pants ─────────────────────────────────────────────────────────────────
   ctx.fillStyle = "#222244";

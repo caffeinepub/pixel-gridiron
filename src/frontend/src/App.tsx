@@ -46,6 +46,11 @@ export default function App() {
   const [localProfile, setLocalProfile] =
     useState<PlayerProfile>(defaultProfile);
 
+  // Separate tick state so we can force a re-render when game state changes
+  // (running/paused/gameOver) without mutating React state inside the game loop.
+  const [gameTick, setGameTick] = useState(0);
+  const forceUpdate = useCallback(() => setGameTick((t) => t + 1), []);
+
   const { data: backendProfile, isLoading: profileLoading } =
     usePlayerProfile();
   const addXp = useAddXp();
@@ -61,11 +66,16 @@ export default function App() {
   const gameStateRef = useRef<GameState>(createInitialGameState(profile));
   const canvasRef = useRef<GameCanvasHandle | null>(null);
 
+  // Always read live state from the ref, never cache gs at render scope
+  const getGs = () => gameStateRef.current;
+
   const syncGameState = useCallback((p: PlayerProfile) => {
     const gs = gameStateRef.current;
+    // Always sync skills regardless of running state — this is the fix for
+    // skill points not taking effect in-game.
+    gs.skills = { ...p.skills };
+    gs.careerStage = p.careerStage;
     if (!gs.running) {
-      gs.skills = p.skills;
-      gs.careerStage = p.careerStage;
       gs.hp = p.hp;
       gs.xp = p.xp;
       gs.level = p.level;
@@ -87,17 +97,20 @@ export default function App() {
     } else if (gs.running) {
       gs.paused = true;
     }
+    forceUpdate();
   };
 
   const handleRestart = useCallback(() => {
     const fresh = createInitialGameState(profile);
     fresh.activeLegend = activeLegend;
+    // Replace the contents of the ref so the existing RAF loop picks it up
     gameStateRef.current = fresh;
     setScore(0);
     setHp(profile.hp);
     setXp(profile.xp);
     setShowGameOver(false);
-  }, [profile, activeLegend]);
+    forceUpdate();
+  }, [profile, activeLegend, forceUpdate]);
 
   const handleScoreUpdate = useCallback((s: number, h: number, x: number) => {
     setScore(s);
@@ -105,11 +118,15 @@ export default function App() {
     setXp(x);
   }, []);
 
-  const handleGameOver = useCallback((finalScore: number, xpGained: number) => {
-    setGameOverScore(finalScore);
-    setGameOverXp(xpGained);
-    setShowGameOver(true);
-  }, []);
+  const handleGameOver = useCallback(
+    (finalScore: number, xpGained: number) => {
+      setGameOverScore(finalScore);
+      setGameOverXp(xpGained);
+      setShowGameOver(true);
+      forceUpdate();
+    },
+    [forceUpdate],
+  );
 
   const handleSaveScore = async () => {
     const name = playerName.trim() || profile.displayName || "Player";
@@ -156,10 +173,14 @@ export default function App() {
     gameStateRef.current.activeLegend = legendId;
   };
 
+  // Read live values from ref every render (gameTick ensures re-render when needed)
   const gs = gameStateRef.current;
   const hpPct = Math.max(0, (hp / 100) * 100);
   const xpPct = Math.max(0, ((xp % 100) / 100) * 100);
   const hpColor = hp > 50 ? "#3FAE5A" : hp > 25 ? "#D4A017" : "#C63A3A";
+
+  // Suppress unused var warning — gameTick is read to force renders
+  void gameTick;
 
   const NAV_ITEMS: { id: Screen; label: string }[] = [
     { id: "skill_tree", label: "SKILL TREE" },
@@ -367,22 +388,22 @@ export default function App() {
           right: 10,
           width: 80,
           height: 36,
-          background: gs.running
+          background: getGs().running
             ? "rgba(42,80,60,0.7)"
             : "rgba(63,174,90,0.85)",
           borderRadius: 8,
-          border: `1px solid ${gs.running ? "rgba(63,174,90,0.4)" : "#60CF80"}`,
+          border: `1px solid ${getGs().running ? "rgba(63,174,90,0.4)" : "#60CF80"}`,
           color: "#FFF",
           fontSize: 11,
           letterSpacing: "0.08em",
         }}
         onPointerDown={(e) => {
           e.preventDefault();
-          if (gs.gameOver) handleRestart();
+          if (getGs().gameOver) handleRestart();
           else handleStart();
         }}
       >
-        {gs.running ? "PAUSE" : gs.gameOver ? "RETRY" : "START"}
+        {getGs().running ? "PAUSE" : getGs().gameOver ? "RETRY" : "START"}
       </button>
 
       {/* LEFT arrow — bottom left */}
@@ -597,7 +618,11 @@ export default function App() {
                   screen === item.id
                     ? "rgba(63,174,90,0.15)"
                     : "rgba(255,255,255,0.04)",
-                border: `1px solid ${screen === item.id ? "rgba(63,174,90,0.5)" : "rgba(255,255,255,0.08)"}`,
+                border: `1px solid ${
+                  screen === item.id
+                    ? "rgba(63,174,90,0.5)"
+                    : "rgba(255,255,255,0.08)"
+                }`,
                 borderRadius: 10,
                 color: screen === item.id ? "#3FAE5A" : "#E7E7E7",
                 fontFamily: "monospace",
