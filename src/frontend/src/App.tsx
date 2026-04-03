@@ -220,6 +220,7 @@ export default function App() {
         background: "#000",
         overflow: "hidden",
       }}
+      onContextMenu={(e) => e.preventDefault()}
     >
       {/* Game canvas fills entire screen */}
       <GameCanvas
@@ -669,6 +670,7 @@ export default function App() {
       {/* Screen overlays (non-game screens) */}
       {screen !== "game" && (
         <div
+          data-scroll="true"
           style={{
             position: "absolute",
             inset: 0,
@@ -817,6 +819,8 @@ export default function App() {
                 value={playerName}
                 onChange={(e) => setPlayerName(e.target.value)}
                 placeholder={profile.displayName || "Enter your name"}
+                inputMode="text"
+                enterKeyHint="done"
                 style={{
                   background: "rgba(255,255,255,0.05)",
                   border: "1px solid rgba(255,255,255,0.1)",

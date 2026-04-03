@@ -4,6 +4,7 @@
   "description": "Mobile football runner RPG with retro 2.5D graphics",
   "start_url": "/",
   "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
   "background_color": "#0D0F12",
   "theme_color": "#3FAE5A",
   "orientation": "portrait",

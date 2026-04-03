@@ -2,7 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
+/* ============================================================
+   SCREEN LOCK — prevents pinch-zoom, bounce scroll, text
+   selection, and soft keyboard popup from non-input elements.
+   ============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  /* Block long-press text selection everywhere */
+  -webkit-user-select: none;
+  user-select: none;
+  /* Kill tap blue highlight */
+  -webkit-tap-highlight-color: transparent;
+  /* Prevent 300ms ghost click delay */
+  touch-action: manipulation;
+}
+
+html {
+  /* Lock the viewport — no bounce, no elastic overscroll */
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: auto;
+  /* No OS font size scaling */
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+}
+
 body,
 #root {
   width: 100%;
@@ -11,6 +40,23 @@ body,
   margin: 0;
   padding: 0;
   touch-action: none;
+  overscroll-behavior: none;
+}
+
+/* Re-allow touch scroll ONLY inside explicit scroll containers */
+[data-scroll="true"] {
+  touch-action: pan-y;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Re-allow text selection inside actual inputs */
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 @font-face {
@@ -91,7 +137,7 @@ body,
   transform: scale(1.15) !important;
 }
 
-/* Disable text selection on game UI */
+/* Legacy alias kept for compatibility */
 .game-ui * {
   -webkit-user-select: none;
   user-select: none;
