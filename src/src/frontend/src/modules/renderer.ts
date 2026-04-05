@@ -22,6 +22,23 @@ import {
 } from "../types/game";
 import { laneX, playerScreenX } from "./movement";
 
+// ── Sprite image loader ────────────────────────────────────────────────────────
+function _loadImg(src: string): HTMLImageElement {
+  const img = new Image();
+  img.src = src;
+  return img;
+}
+const SPRITE_RUN = _loadImg(
+  "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-straight_forward_sprint_left_l_north-019d5fdc-fbd3-750c-a3ed-3ac454759bd6.gif",
+);
+const SPRITE_TURBO = _loadImg(
+  "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-sprinting_with_turbo_north_dir_north-019d5fdc-fbd0-721a-8d8a-d12d66e2ea3c.gif",
+);
+const SPRITE_SPIN = _loadImg(
+  "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-start_out_sprinting_do_a_360_a_north-019d5fdc-fbd6-7380-b121-d45289383c21.gif",
+);
+// ──────────────────────────────────────────────────────────────────────────────
+
 // Project a worldZ + lane to screen coords
 function proj(worldZ: number, lane: number) {
   const t = Math.min(1, Math.max(0, worldZ / SPAWN_Z));
@@ -785,89 +802,39 @@ function drawSprite(
   S: number,
   trail: boolean,
 ) {
-  let body = "#E83030";
-  let helm = "#C02020";
-  let acc = "#FFD700";
-  let num = gs.jerseyNumber ?? 32;
-  if (gs.activeLegend) {
-    const l = LEGENDARY_PLAYERS.find((p) => p.id === gs.activeLegend);
-    if (l) {
-      body = l.color;
-      helm = l.secondaryColor;
-      num = l.number;
-    }
+  // Pick the right GIF frame for current state
+  let img: HTMLImageElement;
+  if (gs.spinning) {
+    img = SPRITE_SPIN;
+  } else if (gs.turboActive) {
+    img = SPRITE_TURBO;
+  } else {
+    img = SPRITE_RUN;
   }
-  const phase = (gs.frame * 0.22) % (Math.PI * 2);
+
+  // Forced sprite size: ~60px wide at scale 1.6 so it fills the player slot cleanly
+  const W = Math.round(72 * S);
+  const H = Math.round(90 * S);
+  const drawX = x - W / 2;
+  const drawY = y - H; // anchor bottom of sprite to player feet
+
   ctx.save();
+  if (trail) ctx.globalAlpha = 0.45;
   if (gs.turboActive && !trail) {
     ctx.shadowColor = "#FFD700";
     ctx.shadowBlur = 10 * S;
   }
-  // legs
-  const stride = Math.sin(phase);
-  const lw = 7 * S;
-  const lbh = 14 * S;
-  const lf = stride > 0;
-  const lH = lf ? lbh * 0.65 : lbh;
-  const rH = !lf ? lbh * 0.65 : lbh;
-  const lA = lf ? 0.72 : 1.0;
-  const rA = !lf ? 0.72 : 1.0;
-  const lO = lf ? -3 * S : 0;
-  const rO = !lf ? -3 * S : 0;
-  ctx.save();
-  ctx.globalAlpha = (trail ? 0.55 : 1) * lA;
-  ctx.fillStyle = "#222244";
-  ctx.fillRect(x - 7 * S, y - lH + 2 * S + lO, lw, lH);
-  ctx.fillStyle = "#111";
-  ctx.fillRect(x - 8 * S, y - S + lO, lw + 2 * S, 4 * S);
-  ctx.restore();
-  ctx.save();
-  ctx.globalAlpha = (trail ? 0.55 : 1) * rA;
-  ctx.fillStyle = "#222244";
-  ctx.fillRect(x, y - rH + 2 * S + rO, lw, rH);
-  ctx.fillStyle = "#111";
-  ctx.fillRect(x - S, y - S + rO, lw + 2 * S, 4 * S);
-  ctx.restore();
-  // pants
-  ctx.fillStyle = "#222244";
-  ctx.fillRect(x - 11 * S, y - 20 * S, 22 * S, 11 * S);
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 11 * S, y - 20 * S, 22 * S, 2 * S);
-  // jersey
-  ctx.fillStyle = body;
-  ctx.fillRect(x - 12 * S, y - 36 * S, 24 * S, 18 * S);
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 1.5 * S, y - 36 * S, 3 * S, 18 * S);
-  ctx.fillRect(x - 12 * S, y - 34 * S, 24 * S, 2 * S);
-  if (!trail) {
-    ctx.fillStyle = acc;
-    ctx.font = `bold ${Math.round(9 * S)}px monospace`;
-    ctx.textAlign = "center";
-    ctx.fillText(String(num), x, y - 23 * S);
+  if (img.complete && img.naturalWidth > 0) {
+    // Draw the GIF as-is — no ctx.scale, no rotation, north-facing only
+    ctx.drawImage(img, drawX, drawY, W, H);
+  } else {
+    // Fallback: simple silhouette until image loads
+    ctx.fillStyle = gs.turboActive ? "#FFD700" : "#E83030";
+    ctx.fillRect(drawX + W * 0.2, drawY, W * 0.6, H);
+    ctx.beginPath();
+    ctx.arc(x, drawY - H * 0.08, W * 0.18, 0, Math.PI * 2);
+    ctx.fill();
   }
-  // shoulders
-  ctx.fillStyle = body;
-  ctx.fillRect(x - 20 * S, y - 38 * S, 12 * S, 7 * S);
-  ctx.fillRect(x + 8 * S, y - 38 * S, 12 * S, 7 * S);
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 20 * S, y - 38 * S, 12 * S, 2 * S);
-  ctx.fillRect(x + 8 * S, y - 38 * S, 12 * S, 2 * S);
-  // helmet rear
-  ctx.fillStyle = helm;
-  ctx.beginPath();
-  ctx.arc(x, y - 45 * S, 12 * S, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 2 * S, y - 57 * S, 4 * S, 18 * S);
-  ctx.fillStyle = "#000";
-  ctx.beginPath();
-  ctx.arc(x - 10 * S, y - 46 * S, 2.5 * S, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x + 10 * S, y - 46 * S, 2.5 * S, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = helm;
-  ctx.fillRect(x - 7 * S, y - 36 * S, 14 * S, 4 * S);
   ctx.restore();
 }
 

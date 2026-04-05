@@ -1,6 +1,6 @@
 // Pixel Gridiron Service Worker
 // Bump CACHE_VERSION every deploy to bust old caches
-const CACHE_VERSION = 'pixel-gridiron-v26';
+const CACHE_VERSION = 'pixel-gridiron-v28';
 const CACHE_NAME = CACHE_VERSION;
 
 self.addEventListener('install', (event) => {
