@@ -238,13 +238,13 @@ function drawSpinEffect(
   ctx.restore();
 }
 
-// ── Player sprite drawing (drawn using canvas primitives) ────────────────────
+// ── Player sprite drawing — pure canvas, no image dependency ────────────────
 function drawPlayer(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
   gs: GameState,
-  spriteImg: HTMLImageElement | null,
+  _spriteImg: HTMLImageElement | null,
 ) {
   const _hz = H * HORIZON_Y;
   const playerDepth = 1.0;
@@ -279,51 +279,8 @@ function drawPlayer(
   ctx.fill();
   ctx.restore();
 
-  if (spriteImg?.complete && spriteImg.naturalWidth > 0) {
-    // Draw from the rear spritesheet — 4 frames, stride animation
-    const frameW = spriteImg.naturalWidth / 4;
-    const frameH = spriteImg.naturalHeight;
-    const strideFrame = Math.floor(gs.elapsedTime * 8) % 4;
-    const sw = frameW;
-    const sh = frameH;
-    const dw = size;
-    const dh = size * (sh / sw);
-
-    // Turbo glow
-    if (gs.turboActive) {
-      ctx.save();
-      ctx.shadowBlur = 22;
-      ctx.shadowColor = "#ff4400";
-      ctx.globalAlpha = 0.7;
-      ctx.restore();
-    }
-    // Shield aura
-    if (gs.shieldActive) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(px, py, size * 0.65, 0, Math.PI * 2);
-      ctx.strokeStyle = "#2E7BD6";
-      ctx.lineWidth = 3;
-      ctx.globalAlpha = 0.7 + Math.sin(gs.elapsedTime * 6) * 0.3;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    ctx.drawImage(
-      spriteImg,
-      strideFrame * sw,
-      0,
-      sw,
-      sh,
-      px - dw / 2,
-      py - dh * 0.85,
-      dw,
-      dh,
-    );
-  } else {
-    // Fallback: draw a pixel-art-style running back shape
-    drawPlayerFallback(ctx, px, py, size, gs);
-  }
+  // Always use canvas-drawn sprite — reliable, transparent, correct size
+  drawPlayerFallback(ctx, px, py, size, gs);
 
   ctx.restore();
 }
@@ -741,8 +698,6 @@ export default class Renderer2D {
   private ctx: CanvasRenderingContext2D | null = null;
   private W = 0;
   private H = 0;
-  private spriteImg: HTMLImageElement | null = null;
-  private spriteLoaded = false;
 
   init(container: HTMLDivElement, w: number, h: number) {
     const canvas = document.createElement("canvas");
@@ -758,19 +713,6 @@ export default class Renderer2D {
     container.appendChild(canvas);
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
-
-    // Load player sprite
-    const img = new Image();
-    img.src =
-      "/assets/generated/players-rear-spritesheet-transparent.dim_256x192.png";
-    img.onload = () => {
-      this.spriteImg = img;
-      this.spriteLoaded = true;
-    };
-    img.onerror = () => {
-      // fallback: use canvas-drawn player
-      this.spriteLoaded = false;
-    };
   }
 
   resize(w: number, h: number) {
@@ -800,7 +742,7 @@ export default class Renderer2D {
     }
 
     // Player (always on top of obstacles)
-    drawPlayer(ctx, W, H, gs, this.spriteLoaded ? this.spriteImg : null);
+    drawPlayer(ctx, W, H, gs, null);
 
     // HUD overlays
     drawFloats(ctx, W, H, gs);
