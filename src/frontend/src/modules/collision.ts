@@ -1,10 +1,9 @@
 /**
  * collision.ts — checks every obstacle against the player each frame.
- * An obstacle collides when worldZ <= COLLISION_Z and lane matches player lane.
+ * Touchdown is driven by the spawner hitting tile 8 (endzone row), NOT a
+ * hardcoded yard distance. This supports variable-length fields.
  *
- * HP BUDGET: player starts at 150hp. Hits cost:
- *   DT: 25hp   DE/LB: 18hp   CB/S: 12hp
- * That means you can take 6+ normal hits before a play ends — readable, fair.
+ * HP BUDGET: 150hp start. Hits cost: DT 25 | LB 20 | DE 18 | CB/S 12
  */
 import {
   BREAK_DUR,
@@ -15,7 +14,6 @@ import {
 } from "../types/game";
 import { laneX } from "./movement";
 
-// Per-type damage values — survivable but meaningful
 const DEFENDER_DAMAGE: Record<string, number> = {
   dt: 25,
   lb: 20,
@@ -25,21 +23,20 @@ const DEFENDER_DAMAGE: Record<string, number> = {
 };
 
 export function detectCollisions(gs: GameState): void {
+  // Endzone already triggered by spawner — don't process more collisions
+  if (gs.touchdown) return;
+
   const px = laneX(gs.lane);
 
   for (const obs of gs.obstacles) {
     if (obs.broken) continue;
-    // Must be close enough to collide
     if (obs.worldZ > COLLISION_Z) continue;
-    // Must be behind the player (not already passed)
     if (obs.worldZ < -1.5) continue;
-    // Must be in the same lane
     if (obs.lane !== gs.lane) continue;
 
-    // Jump clears crates (need decent air)
+    // Jump clears crates
     if (gs.jumping && gs.jumpY > 14 && obs.type === "crate") continue;
 
-    // Mark broken — each obstacle can only trigger ONCE
     obs.broken = true;
     obs.breakTimer = BREAK_DUR;
 
@@ -108,7 +105,6 @@ export function detectCollisions(gs: GameState): void {
             break;
         }
       }
-      // Crates never deal damage — just smash through them
       continue;
     }
 
@@ -117,7 +113,6 @@ export function detectCollisions(gs: GameState): void {
     const xpReward = Math.round(DEFENDER_STATS[defType].xpReward * mult);
 
     if (gs.spinning) {
-      // Spinning through a defender — give XP, no damage
       gainXp(gs, xpReward * 2, px, "SPIN BREAK!", "#FFD700");
       continue;
     }
@@ -139,19 +134,18 @@ export function detectCollisions(gs: GameState): void {
       continue;
     }
 
-    // Take damage
+    const shedChance = (gs.skills.breakTackle ?? 0) * 0.08;
+    if (Math.random() < shedChance) {
+      gainXp(gs, Math.round(xpReward * 0.5), px, "SHED!", "#FF6B35");
+      continue;
+    }
+
     const dmg = DEFENDER_DAMAGE[defType] ?? 18;
     damage(gs, dmg, px);
-    // Check HP after damage — only end play at zero
     if (gs.hp <= 0) {
       endPlay(gs);
-      return; // stop processing further collisions
+      return;
     }
-  }
-
-  // Touchdown check
-  if (gs.fieldZ >= 100) {
-    endPlay(gs);
   }
 }
 
@@ -191,15 +185,17 @@ function float(
 
 export function endPlay(gs: GameState) {
   if (gs.phase !== "playing") return;
-  // Advance the down
-  if (gs.currentDown !== undefined && gs.currentDown < 4) {
-    gs.currentDown += 1;
-  } else {
-    gs.currentDown = 1; // turnover on downs — reset (new play from here)
-    gs.yardsNeeded = 10;
-    gs.driveYards = gs.fieldZ;
+  if (!gs.touchdown) {
+    // Advance down
+    if (gs.currentDown < 4) {
+      gs.currentDown += 1;
+    } else {
+      gs.currentDown = 1;
+      gs.yardsNeeded = 10;
+      gs.driveYards = gs.fieldZ;
+    }
+    gs.yardsToGo = gs.yardsNeeded;
   }
-  gs.yardsToGo = gs.yardsNeeded;
   gs.phase = "tackled";
   gs.tackleTimer = 1.8;
 }

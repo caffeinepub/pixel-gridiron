@@ -1,6 +1,11 @@
 /**
- * renderer.ts — full SNES-style PPU layered draw pipeline.
- * Layer order: sky → horizon → ground → lanes → obstacles → player → floats → coach → flash → scanlines → screens
+ * renderer.ts — SNES-style PPU layered draw pipeline.
+ * Layers: sky → horizon scenery → ground (Mode-7) → lane dividers →
+ *         endzone stripe → obstacles → player → floats → coach → flash → scanlines → screens
+ *
+ * PERSPECTIVE: LANE_HOR is now wide (60..300 = 240px span at horizon)
+ * vs LANE_BOT (28..332 = 304px at bottom). This gives a real rear-view
+ * camera feel instead of the old near-top-down look.
  */
 import {
   BREAK_DUR,
@@ -22,30 +27,43 @@ import {
 } from "../types/game";
 import { laneX, playerScreenX } from "./movement";
 
-// Project a worldZ + lane to screen coords
+// ---------------------------------------------------------------------------
+// Projection: worldZ=0 → player screen pos, worldZ=SPAWN_Z → horizon
+// ---------------------------------------------------------------------------
 function proj(worldZ: number, lane: number) {
   const t = Math.min(1, Math.max(0, worldZ / SPAWN_Z));
   const y = PLAYER_Y - (PLAYER_Y - HORIZON_Y) * t;
-  const bx = LANE_BOT[lane];
-  const hx = LANE_HOR[lane];
+  const bx = LANE_BOT[lane]!;
+  const hx = LANE_HOR[lane]!;
   const x = bx + (hx - bx) * t;
-  const scale = 1 - t * 0.88;
+  // Scale: 1.0 at player feet, shrinks to 0.10 at horizon
+  const scale = 1 - t * 0.9;
   return { x, y, scale };
 }
 
 export function drawFrame(ctx: CanvasRenderingContext2D, gs: GameState): void {
   ctx.clearRect(0, 0, CW, CH);
 
+  // Layer 0: sky
   drawSky(ctx, gs);
+  // Layer 1: horizon scenery
   drawHorizon(ctx, gs);
+  // Layer 2: ground + Mode-7 stripes
   drawGround(ctx, gs);
+  // Layer 3: lane dividers
   drawLanes(ctx, gs);
+  // Layer 3.5: endzone overlay (if close)
+  drawEndzoneApproach(ctx, gs);
+  // Layer 4: obstacles (sorted back→front)
   drawObstacles(ctx, gs);
+  // Layer 5: player
   drawPlayer(ctx, gs);
+  // Layer 6: floating text
   drawFloats(ctx, gs);
+  // Layer 7: coach tutorial
   if (gs.tutActive) drawCoach(ctx, gs);
 
-  // Hurt flash
+  // Hurt flash overlay
   if (gs.hurtFlash > 0) {
     ctx.save();
     ctx.fillStyle = `rgba(198,58,58,${Math.min(0.55, gs.hurtFlash * 1.4).toFixed(2)})`;
@@ -61,18 +79,18 @@ export function drawFrame(ctx: CanvasRenderingContext2D, gs: GameState): void {
   ctx.globalAlpha = 1;
   ctx.restore();
 
-  // Screens
+  // Overlay screens
   if (gs.phase === "idle") drawIdleScreen(ctx, gs);
   if (gs.phase === "paused") drawPauseScreen(ctx, gs);
   if (gs.phase === "tackled") drawTackleScreen(ctx, gs);
 
-  // Yards HUD (always during play)
-  if (gs.phase === "playing" || gs.phase === "tackled") drawYards(ctx, gs);
+  // HUD always during / after play
+  if (gs.phase === "playing" || gs.phase === "tackled") drawHUD(ctx, gs);
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // PPU LAYER 0: SKY
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 function drawSky(ctx: CanvasRenderingContext2D, gs: GameState) {
   const g = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
   const skies: Record<CareerStage, string[]> = {
@@ -84,12 +102,12 @@ function drawSky(ctx: CanvasRenderingContext2D, gs: GameState) {
   };
   const cols = skies[gs.careerStage];
   if (cols.length === 2) {
-    g.addColorStop(0, cols[0]);
-    g.addColorStop(1, cols[1]);
+    g.addColorStop(0, cols[0]!);
+    g.addColorStop(1, cols[1]!);
   } else {
-    g.addColorStop(0, cols[0]);
-    g.addColorStop(0.5, cols[1]);
-    g.addColorStop(1, cols[2]);
+    g.addColorStop(0, cols[0]!);
+    g.addColorStop(0.5, cols[1]!);
+    g.addColorStop(1, cols[2]!);
   }
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, CW, HORIZON_Y);
@@ -132,17 +150,17 @@ function drawSky(ctx: CanvasRenderingContext2D, gs: GameState) {
       [280, 28],
       [350, 40],
     ] as number[][]) {
-      const tw = 0.5 + 0.5 * Math.sin(gs.frame * 0.04 + sx * 0.1);
+      const tw = 0.5 + 0.5 * Math.sin(gs.frame * 0.04 + sx! * 0.1);
       ctx.fillStyle = `rgba(255,255,255,${(0.4 + tw * 0.5).toFixed(2)})`;
-      ctx.fillRect(sx, sy, 2, 2);
+      ctx.fillRect(sx!, sy!, 2, 2);
     }
     ctx.restore();
   }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // PPU LAYER 1: HORIZON SCENERY
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
   const glows: Record<CareerStage, string> = {
     HighSchool: "rgba(120,200,60,0.5)",
@@ -162,7 +180,7 @@ function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
   if (stage === "HighSchool") {
     const cc = ["#E53935", "#1565C0", "#F9A825", "#2E7D32", "#6A1B9A", "#FFF"];
     for (let x = 0; x < CW; x += 5) {
-      ctx.fillStyle = cc[Math.floor(x / 5) % cc.length];
+      ctx.fillStyle = cc[Math.floor(x / 5) % cc.length]!;
       ctx.fillRect(x, HORIZON_Y - 14, 4, 8);
       ctx.fillStyle = "#FFCCBC";
       ctx.fillRect(x + 1, HORIZON_Y - 20, 3, 6);
@@ -182,7 +200,7 @@ function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
     const cc = ["#E53935", "#1565C0", "#F9A825", "#2E7D32", "#FFF"];
     for (let x = 0; x < CW; x += 4) {
       const row = Math.floor(x / 4) % 2;
-      ctx.fillStyle = cc[Math.floor(x / 4) % cc.length];
+      ctx.fillStyle = cc[Math.floor(x / 4) % cc.length]!;
       ctx.fillRect(x, HORIZON_Y - 16 + row * 6, 3, 6);
       ctx.fillStyle = "#FFCCBC";
       ctx.fillRect(x, HORIZON_Y - 20 + row * 6, 3, 4);
@@ -193,16 +211,6 @@ function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
       ctx.fillStyle = "rgba(255,240,180,0.95)";
       ctx.beginPath();
       ctx.arc(lx, HORIZON_Y - 50, 7, 0, Math.PI * 2);
-      ctx.fill();
-      const cg = ctx.createLinearGradient(lx, HORIZON_Y - 43, lx, HORIZON_Y);
-      cg.addColorStop(0, "rgba(255,240,180,0.22)");
-      cg.addColorStop(1, "rgba(255,240,180,0)");
-      ctx.fillStyle = cg;
-      ctx.beginPath();
-      ctx.moveTo(lx, HORIZON_Y - 43);
-      ctx.lineTo(lx - 32, HORIZON_Y);
-      ctx.lineTo(lx + 32, HORIZON_Y);
-      ctx.closePath();
       ctx.fill();
     }
   } else if (stage === "Pro") {
@@ -239,7 +247,7 @@ function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
     const sc = ["#FFD700", "#C63A3A", "#2E7BD6", "#3FAE5A", "#FFF", "#FF69B4"];
     for (let row = 0; row < 5; row++)
       for (let x = 0; x < CW; x += 4) {
-        ctx.fillStyle = sc[(x + row * 9) % sc.length];
+        ctx.fillStyle = sc[(x + row * 9) % sc.length]!;
         ctx.fillRect(x, HORIZON_Y - 24 + row * 5, 3, 5);
         ctx.fillStyle = "#FFCCBC";
         ctx.fillRect(x, HORIZON_Y - 28 + row * 5, 3, 4);
@@ -268,9 +276,9 @@ function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
   }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// PPU LAYER 2: GROUND (Mode-7 scrolling)
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// PPU LAYER 2: GROUND (Mode-7 perspective stripes)
+// ---------------------------------------------------------------------------
 function drawGround(ctx: CanvasRenderingContext2D, gs: GameState) {
   const palettes: Record<CareerStage, [string, string, string, string]> = {
     HighSchool: ["#3A9A2A", "#2E7D32", "#226018", "#1B5E20"],
@@ -281,14 +289,14 @@ function drawGround(ctx: CanvasRenderingContext2D, gs: GameState) {
   };
   const [c1, c2, c3, c4] = palettes[gs.careerStage];
   const gg = ctx.createLinearGradient(0, HORIZON_Y, 0, GROUND_Y);
-  gg.addColorStop(0, c1);
-  gg.addColorStop(0.35, c2);
-  gg.addColorStop(0.7, c3);
-  gg.addColorStop(1, c4);
+  gg.addColorStop(0, c1!);
+  gg.addColorStop(0.35, c2!);
+  gg.addColorStop(0.7, c3!);
+  gg.addColorStop(1, c4!);
   ctx.fillStyle = gg;
   ctx.fillRect(0, HORIZON_Y, CW, GROUND_Y - HORIZON_Y);
 
-  // Mode-7 stripes
+  // Mode-7 alternating turf stripes (perspective-correct trapezoids)
   ctx.save();
   for (let i = 0; i < 20; i++) {
     const d = (i / 20 + gs.fieldScroll) % 1.0;
@@ -304,7 +312,7 @@ function drawGround(ctx: CanvasRenderingContext2D, gs: GameState) {
   }
   ctx.restore();
 
-  // Yard lines
+  // Yard lines — perspective-correct horizontal stripes
   ctx.save();
   ctx.strokeStyle =
     gs.careerStage === "HallOfFame"
@@ -316,21 +324,25 @@ function drawGround(ctx: CanvasRenderingContext2D, gs: GameState) {
     const y = HORIZON_Y + (GROUND_Y - HORIZON_Y) * (1 - d);
     if (y <= HORIZON_Y + 2 || y > GROUND_Y) continue;
     const t = 1 - d;
+    // Use LANE_HOR[0]/[4] as left/right edges at horizon for authentic perspective
+    const leftEdge = LANE_HOR[0]! + (LANE_BOT[0]! - LANE_HOR[0]!) * (1 - t);
+    const rightEdge = LANE_HOR[4]! + (LANE_BOT[4]! - LANE_HOR[4]!) * (1 - t);
     ctx.lineWidth = Math.max(0.5, 2 * (1 - raw));
     ctx.globalAlpha = 0.2 + d * 0.5;
     ctx.beginPath();
-    ctx.moveTo(Math.max(0, VANISH_X - VANISH_X * t - 2), y);
-    ctx.lineTo(Math.min(CW, VANISH_X + (CW - VANISH_X) * t + 2), y);
+    ctx.moveTo(leftEdge - 4, y);
+    ctx.lineTo(rightEdge + 4, y);
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
   ctx.restore();
 
+  // SuperBowl confetti on ground
   if (gs.careerStage === "SuperBowl") {
     const cc = ["#FFD700", "#C63A3A", "#2E7BD6", "#3FAE5A", "#FF69B4"];
     ctx.save();
     for (let i = 0; i < 18; i++) {
-      ctx.fillStyle = cc[i % cc.length];
+      ctx.fillStyle = cc[i % cc.length]!;
       ctx.fillRect(
         (i * 22 + gs.frame * 0.9) % CW,
         HORIZON_Y + ((gs.frame * (0.5 + i * 0.08)) % (GROUND_Y - HORIZON_Y)),
@@ -342,49 +354,78 @@ function drawGround(ctx: CanvasRenderingContext2D, gs: GameState) {
   }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // PPU LAYER 3: LANE DIVIDERS
-// ───────────────────────────────────────────────────────────────────────────────
+// The LANE_HOR/LANE_BOT values define 5 lane centers.
+// We draw 6 divider lines between and outside them.
+// ---------------------------------------------------------------------------
 function drawLanes(ctx: CanvasRenderingContext2D, gs: GameState) {
   const col =
     gs.careerStage === "HallOfFame"
-      ? "rgba(255,200,0,0.55)"
+      ? "rgba(255,200,0,0.65)"
       : gs.careerStage === "HighSchool"
-        ? "rgba(255,255,255,0.55)"
-        : "rgba(255,255,255,0.3)";
-  const bEdge = [
-    LANE_BOT[0] - (LANE_BOT[1] - LANE_BOT[0]) / 2,
-    (LANE_BOT[0] + LANE_BOT[1]) / 2,
-    (LANE_BOT[1] + LANE_BOT[2]) / 2,
-    (LANE_BOT[2] + LANE_BOT[3]) / 2,
-    (LANE_BOT[3] + LANE_BOT[4]) / 2,
-    LANE_BOT[4] + (LANE_BOT[4] - LANE_BOT[3]) / 2,
+        ? "rgba(255,255,255,0.65)"
+        : "rgba(255,255,255,0.38)";
+
+  // Build 6 edge positions from 5 lane centers
+  const halfBot = (LANE_BOT[1]! - LANE_BOT[0]!) / 2;
+  const halfHor = (LANE_HOR[1]! - LANE_HOR[0]!) / 2;
+  const bEdge: number[] = [
+    LANE_BOT[0]! - halfBot,
+    (LANE_BOT[0]! + LANE_BOT[1]!) / 2,
+    (LANE_BOT[1]! + LANE_BOT[2]!) / 2,
+    (LANE_BOT[2]! + LANE_BOT[3]!) / 2,
+    (LANE_BOT[3]! + LANE_BOT[4]!) / 2,
+    LANE_BOT[4]! + halfBot,
   ];
-  const hEdge = [
-    LANE_HOR[0] - (LANE_HOR[1] - LANE_HOR[0]) / 2,
-    (LANE_HOR[0] + LANE_HOR[1]) / 2,
-    (LANE_HOR[1] + LANE_HOR[2]) / 2,
-    (LANE_HOR[2] + LANE_HOR[3]) / 2,
-    (LANE_HOR[3] + LANE_HOR[4]) / 2,
-    LANE_HOR[4] + (LANE_HOR[4] - LANE_HOR[3]) / 2,
+  const hEdge: number[] = [
+    LANE_HOR[0]! - halfHor,
+    (LANE_HOR[0]! + LANE_HOR[1]!) / 2,
+    (LANE_HOR[1]! + LANE_HOR[2]!) / 2,
+    (LANE_HOR[2]! + LANE_HOR[3]!) / 2,
+    (LANE_HOR[3]! + LANE_HOR[4]!) / 2,
+    LANE_HOR[4]! + halfHor,
   ];
+
   ctx.save();
   ctx.strokeStyle = col;
   for (let i = 0; i <= 5; i++) {
     ctx.lineWidth = i === 0 || i === 5 ? 2.5 : 1.5;
-    ctx.globalAlpha = i === 0 || i === 5 ? 0.85 : 0.45;
+    ctx.globalAlpha = i === 0 || i === 5 ? 0.85 : 0.5;
     ctx.beginPath();
-    ctx.moveTo(hEdge[i], HORIZON_Y);
-    ctx.lineTo(bEdge[i], GROUND_Y);
+    ctx.moveTo(hEdge[i]!, HORIZON_Y);
+    ctx.lineTo(bEdge[i]!, GROUND_Y);
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
   ctx.restore();
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// PPU LAYER 4: OBSTACLES
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// PPU LAYER 3.5: ENDZONE APPROACH TINT
+// When the player is close to the endzone rows, flash a gold glow on the field.
+// ---------------------------------------------------------------------------
+function drawEndzoneApproach(ctx: CanvasRenderingContext2D, gs: GameState) {
+  if (!gs.touchdown) return;
+  // After touchdown fires, flash the whole field gold
+  const pulse = 0.3 + 0.2 * Math.sin(gs.frame * 0.2);
+  ctx.save();
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = "rgba(255,215,0,0.35)";
+  ctx.fillRect(0, HORIZON_Y, CW, GROUND_Y - HORIZON_Y);
+  // ENDZONE painted letters
+  ctx.globalAlpha = 0.7;
+  ctx.fillStyle = "#FFD700";
+  ctx.font = "bold 32px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("END ZONE", CW / 2, (HORIZON_Y + GROUND_Y) / 2 - 10);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// PPU LAYER 4: OBSTACLES (sorted back→front by worldZ)
+// ---------------------------------------------------------------------------
 function drawObstacles(ctx: CanvasRenderingContext2D, gs: GameState) {
   const sorted = [...gs.obstacles].sort((a, b) => b.worldZ - a.worldZ);
   for (const obs of sorted) {
@@ -482,8 +523,9 @@ function drawCrate(
   stage: CareerStage,
   hasPow: boolean,
 ) {
-  const w = Math.max(22, 52 * scale);
-  const h = w;
+  // Larger crates — minimum 28px, scale up to 60px
+  const w = Math.max(28, 60 * scale);
+  const h = w * 1.05;
   const mc: Record<CareerStage, string> = {
     HighSchool: "#8B4513",
     College: "#9B2020",
@@ -492,26 +534,36 @@ function drawCrate(
     HallOfFame: "#DAA520",
   };
   ctx.save();
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fillRect(x - w / 2 + 4, y - h + 4, w, h);
+  // Drop shadow
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(x - w / 2 + 5, y - h + 6, w, h);
+  // Main body
   ctx.fillStyle = mc[stage];
   ctx.fillRect(x - w / 2, y - h, w, h);
-  ctx.fillStyle = "rgba(255,255,255,0.2)";
-  ctx.fillRect(x - w / 2, y - h, w, 3);
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
-  ctx.fillRect(x + w / 2 - 3, y - h, 3, h);
-  ctx.fillRect(x - w / 2, y - 3, w, 3);
-  ctx.strokeStyle = "rgba(0,0,0,0.4)";
-  ctx.lineWidth = Math.max(1, 1.5 * scale);
+  // Top highlight
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  ctx.fillRect(x - w / 2, y - h, w, 4);
+  // Right shadow
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fillRect(x + w / 2 - 4, y - h, 4, h);
+  // Bottom shadow
+  ctx.fillRect(x - w / 2, y - 4, w, 4);
+  // Wooden cross slats
+  ctx.strokeStyle = "rgba(0,0,0,0.45)";
+  ctx.lineWidth = Math.max(1.5, 2 * scale);
   ctx.beginPath();
   ctx.moveTo(x - w / 2, y - h);
   ctx.lineTo(x + w / 2, y);
   ctx.moveTo(x + w / 2, y - h);
   ctx.lineTo(x - w / 2, y);
   ctx.stroke();
+  // Center vertical band
+  ctx.fillStyle = "rgba(0,0,0,0.15)";
+  ctx.fillRect(x - 3, y - h, 6, h);
+  // Power glow
   if (hasPow) {
     const pg = ctx.createRadialGradient(x, y - h / 2, 2, x, y - h / 2, w / 2);
-    pg.addColorStop(0, "rgba(255,215,0,0.55)");
+    pg.addColorStop(0, "rgba(255,215,0,0.65)");
     pg.addColorStop(1, "rgba(255,215,0,0)");
     ctx.fillStyle = pg;
     ctx.fillRect(x - w / 2, y - h, w, h);
@@ -558,12 +610,12 @@ function drawDefender(
     ctx.shadowColor = "#FFD700";
     ctx.shadowBlur = 8 * scale;
   }
-  // shadow
+  // Shadow
   ctx.fillStyle = "rgba(0,0,0,0.3)";
   ctx.beginPath();
   ctx.ellipse(x, y + 2, bW * 0.55, bH * 0.08, 0, 0, Math.PI * 2);
   ctx.fill();
-  // legs
+  // Stride legs
   const sw = Math.sin(frame * 0.18) * bW * 0.12;
   const lw = bW * 0.25;
   const lh = bH * 0.25;
@@ -573,24 +625,24 @@ function drawDefender(
   ctx.fillStyle = "#000";
   ctx.fillRect(x - bW * 0.26 + sw, y - 3 * scale, lw + 2, 4 * scale);
   ctx.fillRect(x + bW * 0.18 - sw, y - 3 * scale, lw + 2, 4 * scale);
-  // pants
+  // Pants
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(x - bW * 0.45, y - bH * 0.32, bW * 0.9, bH * 0.22);
-  // jersey
-  ctx.fillStyle = jc;
+  // Jersey
+  ctx.fillStyle = jc!;
   ctx.fillRect(x - bW * 0.48, y - bH * 0.72, bW * 0.96, bH * 0.44);
-  ctx.fillStyle = ac;
+  ctx.fillStyle = ac!;
   ctx.fillRect(x - bW * 0.48, y - bH * 0.72, bW * 0.07, bH * 0.44);
   ctx.fillRect(x + bW * 0.41, y - bH * 0.72, bW * 0.07, bH * 0.44);
-  // shoulder pads
-  ctx.fillStyle = jc;
+  // Shoulder pads
+  ctx.fillStyle = jc!;
   ctx.fillRect(x - bW * 0.55, y - bH * 0.72, bW * 0.2, bH * 0.15);
   ctx.fillRect(x + bW * 0.35, y - bH * 0.72, bW * 0.2, bH * 0.15);
-  // arms
+  // Arms
   ctx.fillStyle = "#C89060";
   ctx.fillRect(x - bW * 0.58, y - bH * 0.62, bW * 0.13, bH * 0.22);
   ctx.fillRect(x + bW * 0.45, y - bH * 0.62, bW * 0.13, bH * 0.22);
-  // label
+  // Position label
   if (scale > 0.3 && dType) {
     const tc: Record<string, string> = {
       de: "#FF7070",
@@ -599,7 +651,7 @@ function drawDefender(
       cb: "#6BAAFF",
       s: "#4AAEFF",
     };
-    ctx.fillStyle = tc[dType] ?? ac;
+    ctx.fillStyle = tc[dType] ?? ac!;
     ctx.font = `bold ${Math.max(8, Math.round(11 * scale))}px monospace`;
     ctx.textAlign = "center";
     ctx.fillText(
@@ -608,13 +660,13 @@ function drawDefender(
       y - bH * 0.5,
     );
   }
-  // helmet
+  // Helmet
   const hr = bW * 0.28;
-  ctx.fillStyle = hc;
+  ctx.fillStyle = hc!;
   ctx.beginPath();
   ctx.arc(x, y - bH * 0.82, hr, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = ac;
+  ctx.fillStyle = ac!;
   ctx.fillRect(x - hr * 0.8, y - bH * 0.78, hr * 1.6, 2 * scale);
   ctx.fillRect(x - hr * 0.8, y - bH * 0.72, hr * 1.6, 2 * scale);
   ctx.fillRect(x - scale, y - bH * 0.9, 2 * scale, bH * 0.22);
@@ -628,9 +680,9 @@ function drawDefender(
   ctx.restore();
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // PPU LAYER 5: PLAYER
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 function drawPlayer(ctx: CanvasRenderingContext2D, gs: GameState) {
   const px = playerScreenX(gs);
   const py = PLAYER_Y - gs.jumpY;
@@ -707,7 +759,7 @@ function drawSprite(
     ctx.shadowColor = "#FFD700";
     ctx.shadowBlur = 10 * S;
   }
-  // legs
+  // Depth-stride legs: forward leg foreshortens, back leg extends
   const stride = Math.sin(phase);
   const lw = 7 * S;
   const lbh = 14 * S;
@@ -732,12 +784,12 @@ function drawSprite(
   ctx.fillStyle = "#111";
   ctx.fillRect(x - S, y - S + rO, lw + 2 * S, 4 * S);
   ctx.restore();
-  // pants
+  // Pants
   ctx.fillStyle = "#222244";
   ctx.fillRect(x - 11 * S, y - 20 * S, 22 * S, 11 * S);
   ctx.fillStyle = acc;
   ctx.fillRect(x - 11 * S, y - 20 * S, 22 * S, 2 * S);
-  // jersey
+  // Jersey
   ctx.fillStyle = body;
   ctx.fillRect(x - 12 * S, y - 36 * S, 24 * S, 18 * S);
   ctx.fillStyle = acc;
@@ -749,14 +801,14 @@ function drawSprite(
     ctx.textAlign = "center";
     ctx.fillText(String(num), x, y - 23 * S);
   }
-  // shoulders
+  // Shoulder pads
   ctx.fillStyle = body;
   ctx.fillRect(x - 20 * S, y - 38 * S, 12 * S, 7 * S);
   ctx.fillRect(x + 8 * S, y - 38 * S, 12 * S, 7 * S);
   ctx.fillStyle = acc;
   ctx.fillRect(x - 20 * S, y - 38 * S, 12 * S, 2 * S);
   ctx.fillRect(x + 8 * S, y - 38 * S, 12 * S, 2 * S);
-  // helmet rear
+  // Helmet
   ctx.fillStyle = helm;
   ctx.beginPath();
   ctx.arc(x, y - 45 * S, 12 * S, 0, Math.PI * 2);
@@ -775,9 +827,9 @@ function drawSprite(
   ctx.restore();
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // PPU LAYER 6: FLOATING TEXT
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 function drawFloats(ctx: CanvasRenderingContext2D, gs: GameState) {
   for (const ft of gs.floats) {
     const a = Math.min(1, (ft.life / ft.maxLife) * 2);
@@ -793,9 +845,9 @@ function drawFloats(ctx: CanvasRenderingContext2D, gs: GameState) {
   }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // PPU LAYER 7: COACH TUTORIAL
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 function drawCoach(ctx: CanvasRenderingContext2D, gs: GameState) {
   const alpha = Math.min(1, gs.tutTimer * 0.8);
   ctx.save();
@@ -858,9 +910,9 @@ function drawCoach(ctx: CanvasRenderingContext2D, gs: GameState) {
   ctx.restore();
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // SCREENS
-// ───────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 function drawIdleScreen(ctx: CanvasRenderingContext2D, gs: GameState) {
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.82)";
@@ -921,30 +973,42 @@ function drawTackleScreen(ctx: CanvasRenderingContext2D, gs: GameState) {
   ctx.fillStyle = `rgba(0,0,0,${alpha.toFixed(2)})`;
   ctx.fillRect(0, 0, CW, CH);
   if (alpha > 0.35) {
-    ctx.fillStyle = "#C63A3A";
-    ctx.font = "bold 30px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText("TACKLED!", CW / 2, CH * 0.35);
-    ctx.fillStyle = "#E7E7E7";
-    ctx.font = "bold 18px monospace";
-    ctx.fillText(`${Math.floor(gs.fieldZ)} YARDS`, CW / 2, CH * 0.35 + 44);
-    ctx.fillStyle = "#3FAE5A";
-    ctx.font = "bold 13px monospace";
-    ctx.fillText("TAP START → NEXT PLAY", CW / 2, CH * 0.35 + 78);
+    if (gs.touchdown) {
+      // Touchdown celebration screen
+      ctx.fillStyle = "#FFD700";
+      ctx.font = "bold 36px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("TOUCHDOWN!", CW / 2, CH * 0.32);
+      ctx.fillStyle = "#3FAE5A";
+      ctx.font = "bold 18px monospace";
+      ctx.fillText(`${Math.floor(gs.fieldZ)} YARDS`, CW / 2, CH * 0.32 + 46);
+      ctx.fillStyle = "#E7E7E7";
+      ctx.font = "bold 13px monospace";
+      ctx.fillText("TAP START → NEXT PLAY", CW / 2, CH * 0.32 + 80);
+    } else {
+      ctx.fillStyle = "#C63A3A";
+      ctx.font = "bold 30px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("TACKLED!", CW / 2, CH * 0.35);
+      ctx.fillStyle = "#E7E7E7";
+      ctx.font = "bold 18px monospace";
+      ctx.fillText(`${Math.floor(gs.fieldZ)} YARDS`, CW / 2, CH * 0.35 + 44);
+      ctx.fillStyle = "#3FAE5A";
+      ctx.font = "bold 13px monospace";
+      ctx.fillText("TAP START → NEXT PLAY", CW / 2, CH * 0.35 + 78);
+    }
   }
   ctx.restore();
 }
 
-function drawYards(ctx: CanvasRenderingContext2D, gs: GameState) {
+function drawHUD(ctx: CanvasRenderingContext2D, gs: GameState) {
   const yards = Math.floor(gs.fieldZ);
   const down = gs.currentDown ?? 1;
   const toGo = Math.max(0, Math.ceil(gs.yardsToGo ?? 10));
   ctx.save();
-
-  // Down & distance pill (top right, under HUD)
+  // Down & distance pill
   ctx.fillStyle = "rgba(0,0,0,0.62)";
   ctx.fillRect(CW - 130, 54, 126, 40);
-  // Down label
   const downLabel =
     down === 1 ? "1ST" : down === 2 ? "2ND" : down === 3 ? "3RD" : "4TH";
   const downColor = down >= 4 ? "#C63A3A" : down >= 3 ? "#D4A017" : "#3FAE5A";
@@ -952,12 +1016,10 @@ function drawYards(ctx: CanvasRenderingContext2D, gs: GameState) {
   ctx.font = "bold 14px monospace";
   ctx.textAlign = "right";
   ctx.fillText(`${downLabel} & ${toGo}`, CW - 6, 70);
-  // Yards
   ctx.fillStyle = "rgba(200,200,200,0.7)";
   ctx.font = "bold 10px monospace";
   ctx.fillText(`${yards} YDS`, CW - 6, 88);
   ctx.restore();
 }
 
-// re-export laneX for external consumers
 export { laneX };

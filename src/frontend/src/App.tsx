@@ -34,17 +34,12 @@ import {
   xpForNextLevel,
 } from "./types/game";
 
-type Screen =
-  | "game"
-  | "leaderboard"
-  | "skill_tree"
-  | "legends"
-  | "how_to_play"
-  | "password";
+type Tab = "game" | "skills" | "legends" | "scores" | "howto" | "save";
+
+const TAB_BAR_H = 52;
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("game");
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>("game");
   const [score, setScore] = useState(0);
   const [hp, setHp] = useState(100);
   const [xp, setXp] = useState(0);
@@ -75,6 +70,9 @@ export default function App() {
   const isLoggingIn = loginStatus === "logging-in";
 
   const profile = backendProfile ?? localProfile;
+  // Ref always points to latest profile — used in stable callbacks to avoid stale closures
+  const profileRef = useRef<typeof profile>(profile);
+  profileRef.current = profile;
 
   const gameStateRef = useRef<GameState>(createGameState(profile));
   const canvasRef = useRef<GameCanvasHandle | null>(null);
@@ -132,17 +130,19 @@ export default function App() {
   // Called when a tackle ends the play (not game over)
   const handleTackled = useCallback(
     (yards: number, xpGained: number, items: string[]) => {
-      const newXp = localProfile.xp + xpGained;
+      // Use ref so this callback never goes stale — upgrading skills won't reset the RAF loop
+      const p = profileRef.current;
+      const newXp = p.xp + xpGained;
       const newLevel = levelFromXp(newXp);
-      const leveledUp = newLevel > localProfile.level;
-      const bonusPoints = leveledUp ? newLevel - localProfile.level : 0;
+      const leveledUp = newLevel > p.level;
+      const bonusPoints = leveledUp ? newLevel - p.level : 0;
 
       const updatedProfile: PlayerProfile = {
-        ...localProfile,
+        ...p,
         xp: newXp,
         level: newLevel,
-        skillPoints: localProfile.skillPoints + bonusPoints,
-        highScore: Math.max(localProfile.highScore, score),
+        skillPoints: p.skillPoints + bonusPoints,
+        highScore: Math.max(p.highScore, gameStateRef.current.score),
       };
       setLocalProfile(updatedProfile);
       qc.setQueryData(["profile"], updatedProfile);
@@ -157,28 +157,31 @@ export default function App() {
         items,
         leveledUp,
         newLevel,
-        touchdown: false,
+        touchdown: gameStateRef.current.touchdown ?? false,
       });
       setShowPlayResult(true);
       forceUpdate();
     },
-    [localProfile, isLoggedIn, score, addXp, qc, forceUpdate],
+    // Stable deps only — profileRef.current is read at call time, not captured
+    [isLoggedIn, addXp, qc, forceUpdate],
   );
 
   const handleNextPlay = useCallback(() => {
+    // Use profileRef to always get the freshest profile (including just-upgraded skills)
+    const p = profileRef.current;
     const careerYards =
       (gameStateRef.current.careerYards || 0) + (playResult?.yards || 0);
-    const fresh = createGameState(profile);
+    const fresh = createGameState(p);
     fresh.activeLegend = activeLegend;
     fresh.careerYards = careerYards;
     gameStateRef.current = fresh;
     setScore(0);
-    setHp(profile.hp);
-    setXp(profile.xp);
+    setHp(fresh.hp);
+    setXp(p.xp);
     setShowPlayResult(false);
     setPlayResult(null);
     forceUpdate();
-  }, [profile, activeLegend, playResult, forceUpdate]);
+  }, [activeLegend, playResult, forceUpdate]);
 
   const handleSaveScore = async () => {
     const name = playerName.trim() || profile.displayName || "Player";
@@ -238,14 +241,7 @@ export default function App() {
 
   void gameTick;
 
-  const NAV_ITEMS: { id: Screen; label: string }[] = [
-    { id: "skill_tree", label: "SKILL TREE" },
-    { id: "legends", label: "LEGENDS" },
-    { id: "password", label: "PASSWORD SAVE" },
-    { id: "leaderboard", label: "LEADERBOARD" },
-    { id: "how_to_play", label: "HOW TO PLAY" },
-  ];
-
+  // ─── Shared style helpers ────────────────────────────────────────────────
   const btnBase: React.CSSProperties = {
     position: "absolute",
     zIndex: 20,
@@ -269,6 +265,16 @@ export default function App() {
     },
   });
 
+  // ─── Tab bar config ───────────────────────────────────────────────────────
+  const TABS: { id: Tab; label: string; icon: string }[] = [
+    { id: "game", label: "GAME", icon: "🏈" },
+    { id: "skills", label: "SKILLS", icon: "⚡" },
+    { id: "legends", label: "LEGENDS", icon: "🌟" },
+    { id: "scores", label: "SCORES", icon: "🏆" },
+    { id: "howto", label: "HOW TO", icon: "❓" },
+    { id: "save", label: "SAVE", icon: "💾" },
+  ];
+
   return (
     <div
       style={{
@@ -279,7 +285,9 @@ export default function App() {
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* Game canvas fills entire screen */}
+      {/* ──────────────────────────────────────────────────────────────────
+          GAME LAYER — canvas always mounted, just hidden behind other tabs
+          ────────────────────────────────────────────────────────────────── */}
       <GameCanvas
         ref={canvasRef}
         gameStateRef={gameStateRef}
@@ -287,527 +295,483 @@ export default function App() {
         onTackled={handleTackled}
       />
 
-      {/* HUD overlay — top bar */}
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 48,
-          background: "rgba(0,0,0,0.65)",
-          backdropFilter: "blur(4px)",
-          display: "flex",
-          alignItems: "center",
-          padding: "0 8px",
-          gap: 8,
-          zIndex: 15,
-          pointerEvents: "none",
-          borderBottom: "1px solid rgba(63,174,90,0.2)",
-        }}
-      >
-        {/* HP bar */}
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginBottom: 2,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 9,
-                color: "#A9B0B6",
-                fontFamily: "monospace",
-                fontWeight: 700,
-              }}
-            >
-              HP
-            </span>
-            <span
-              style={{ fontSize: 9, color: hpColor, fontFamily: "monospace" }}
-            >
-              {hp}
-            </span>
-          </div>
-          <div
-            style={{
-              height: 5,
-              background: "rgba(255,255,255,0.1)",
-              borderRadius: 3,
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: `${hpPct}%`,
-                height: "100%",
-                borderRadius: 3,
-                background: hpColor,
-                transition: "width 0.15s",
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Score center */}
-        <div style={{ textAlign: "center", minWidth: 90 }}>
-          <div
-            style={{
-              fontFamily: "monospace",
-              fontSize: 16,
-              fontWeight: 700,
-              color: "#3FAE5A",
-              letterSpacing: "0.08em",
-            }}
-          >
-            {String(score).padStart(6, "0")}
-          </div>
-          <div
-            style={{ fontFamily: "monospace", fontSize: 8, color: "#4A545D" }}
-          >
-            HI: {String(profile.highScore).padStart(6, "0")}
-          </div>
-        </div>
-
-        {/* XP bar */}
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginBottom: 2,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 9,
-                color: "#A9B0B6",
-                fontFamily: "monospace",
-                fontWeight: 700,
-              }}
-            >
-              XP
-            </span>
-            <span
-              style={{ fontSize: 9, color: "#2E7BD6", fontFamily: "monospace" }}
-            >
-              Lv.{currentLevel}
-            </span>
-          </div>
-          <div
-            style={{
-              height: 5,
-              background: "rgba(255,255,255,0.1)",
-              borderRadius: 3,
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: `${xpPct}%`,
-                height: "100%",
-                borderRadius: 3,
-                background: "#2E7BD6",
-                transition: "width 0.15s",
-              }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Hamburger menu button — top left */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          top: 56,
-          left: 10,
-          width: 40,
-          height: 36,
-          background: "rgba(0,0,0,0.55)",
-          borderRadius: 8,
-          border: "1px solid rgba(63,174,90,0.3)",
-          color: "#3FAE5A",
-          fontSize: 18,
-        }}
-        onClick={() => setMenuOpen(true)}
-      >
-        ☰
-      </button>
-
-      {/* START / PAUSE button — top right */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          top: 56,
-          right: 10,
-          width: 80,
-          height: 36,
-          background:
-            getGs().phase === "playing"
-              ? "rgba(42,80,60,0.7)"
-              : "rgba(63,174,90,0.85)",
-          borderRadius: 8,
-          border: `1px solid ${
-            getGs().phase === "playing" ? "rgba(63,174,90,0.4)" : "#60CF80"
-          }`,
-          color: "#FFF",
-          fontSize: 11,
-          letterSpacing: "0.08em",
-        }}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          handleStart();
-        }}
-      >
-        {getGs().phase === "playing"
-          ? "PAUSE"
-          : getGs().phase === "paused"
-            ? "RESUME"
-            : "START"}
-      </button>
-
-      {/* LEFT arrow — bottom left */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          bottom: 20,
-          left: 12,
-          width: 88,
-          height: 68,
-          background: "rgba(0,0,0,0.5)",
-          borderRadius: 14,
-          border: "2px solid rgba(255,255,255,0.15)",
-          color: "#fff",
-          fontSize: 32,
-        }}
-        {...makePointerHandlers(() => canvasRef.current?.pressLeft())}
-        aria-label="Move left"
-        data-ocid="game.left.button"
-      >
-        ◀
-      </button>
-
-      {/* RIGHT arrow — bottom left, next to left arrow */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          bottom: 20,
-          left: 112,
-          width: 88,
-          height: 68,
-          background: "rgba(0,0,0,0.5)",
-          borderRadius: 14,
-          border: "2px solid rgba(255,255,255,0.15)",
-          color: "#fff",
-          fontSize: 32,
-        }}
-        {...makePointerHandlers(() => canvasRef.current?.pressRight())}
-        aria-label="Move right"
-        data-ocid="game.right.button"
-      >
-        ▶
-      </button>
-
-      {/* SPIN — bottom right top-left */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          bottom: 100,
-          right: 92,
-          width: 72,
-          height: 52,
-          background: gs.spinning
-            ? "rgba(46,123,214,0.7)"
-            : "rgba(46,123,214,0.45)",
-          borderRadius: "50%",
-          border: "2px solid #4A8FD6",
-          color: "#fff",
-          fontSize: 11,
-          letterSpacing: "0.05em",
-          boxShadow: gs.spinning ? "0 0 16px rgba(46,123,214,0.8)" : "none",
-        }}
-        {...makePointerHandlers(() => canvasRef.current?.pressSpin())}
-        aria-label="Spin move"
-        data-ocid="game.spin.button"
-      >
-        SPIN
-      </button>
-
-      {/* TURBO — bottom right top-right */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          bottom: 100,
-          right: 12,
-          width: 72,
-          height: 52,
-          background: gs.turboActive
-            ? "rgba(198,58,58,0.7)"
-            : "rgba(198,58,58,0.45)",
-          borderRadius: "50%",
-          border: "2px solid #E05050",
-          color: "#fff",
-          fontSize: 11,
-          letterSpacing: "0.05em",
-          boxShadow: gs.turboActive ? "0 0 16px rgba(198,58,58,0.8)" : "none",
-        }}
-        {...makePointerHandlers(() => canvasRef.current?.pressTurbo())}
-        aria-label="Turbo boost"
-        data-ocid="game.turbo.button"
-      >
-        TURBO
-      </button>
-
-      {/* HURDLE — bottom right bottom-center */}
-      <button
-        type="button"
-        style={{
-          ...btnBase,
-          bottom: 24,
-          right: 40,
-          width: 96,
-          height: 60,
-          background: "rgba(63,174,90,0.45)",
-          borderRadius: "50%",
-          border: "2px solid #50C860",
-          color: "#fff",
-          fontSize: 11,
-          letterSpacing: "0.05em",
-        }}
-        {...makePointerHandlers(() => canvasRef.current?.pressHurdle())}
-        aria-label="Hurdle jump"
-        data-ocid="game.hurdle.button"
-      >
-        HURDLE
-      </button>
-
-      {/* Nav menu overlay */}
-      {menuOpen && (
+      {/* ── HUD overlay — top bar (game tab only) ─────────────────────── */}
+      {tab === "game" && (
         <div
           style={{
             position: "absolute",
-            inset: 0,
-            background: "rgba(0,0,0,0.92)",
-            zIndex: 50,
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 48,
+            background: "rgba(0,0,0,0.65)",
+            backdropFilter: "blur(4px)",
             display: "flex",
-            flexDirection: "column",
             alignItems: "center",
-            justifyContent: "center",
-            gap: 16,
+            padding: "0 8px",
+            gap: 8,
+            zIndex: 15,
+            pointerEvents: "none",
+            borderBottom: "1px solid rgba(63,174,90,0.2)",
           }}
         >
-          <div
-            style={{
-              fontFamily: "monospace",
-              fontWeight: 800,
-              fontSize: 24,
-              color: "#3FAE5A",
-              letterSpacing: "0.12em",
-              marginBottom: 12,
-            }}
-          >
-            PIXEL <span style={{ color: "#E7E7E7" }}>GRIDIRON</span>
-          </div>
-
-          {/* Auth */}
-          <div
-            style={{
-              marginBottom: 8,
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-            }}
-          >
-            {isLoggedIn ? (
-              <>
-                <Badge
-                  style={{
-                    fontSize: 11,
-                    background: "rgba(63,174,90,0.15)",
-                    borderColor: "rgba(63,174,90,0.4)",
-                    color: "#3FAE5A",
-                  }}
-                >
-                  Lv.{profile.level} {profile.displayName}
-                </Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={clear}
-                  style={{
-                    fontSize: 10,
-                    padding: "4px 12px",
-                    height: "auto",
-                    borderColor: "rgba(255,255,255,0.15)",
-                    color: "#A9B0B6",
-                  }}
-                >
-                  LOGOUT
-                </Button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                onClick={login}
-                disabled={isLoggingIn}
-                style={{
-                  fontSize: 11,
-                  padding: "6px 20px",
-                  height: "auto",
-                  background: "rgba(43,51,58,0.9)",
-                  border: "1px solid rgba(74,84,93,0.8)",
-                  color: "#E7E7E7",
-                  fontWeight: 700,
-                  letterSpacing: "0.08em",
-                }}
-              >
-                {isLoggingIn ? "CONNECTING..." : "LOGIN"}
-              </Button>
-            )}
-          </div>
-
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              data-ocid={`menu.${item.id}.button`}
+          {/* HP bar */}
+          <div style={{ flex: 1 }}>
+            <div
               style={{
-                width: 240,
-                padding: "14px 0",
-                background:
-                  screen === item.id
-                    ? "rgba(63,174,90,0.15)"
-                    : "rgba(255,255,255,0.04)",
-                border: `1px solid ${
-                  screen === item.id
-                    ? "rgba(63,174,90,0.5)"
-                    : "rgba(255,255,255,0.08)"
-                }`,
-                borderRadius: 10,
-                color: screen === item.id ? "#3FAE5A" : "#E7E7E7",
-                fontFamily: "monospace",
-                fontWeight: 700,
-                fontSize: 14,
-                letterSpacing: "0.1em",
-                cursor: "pointer",
-              }}
-              onClick={() => {
-                setScreen(item.id);
-                setMenuOpen(false);
+                display: "flex",
+                justifyContent: "space-between",
+                marginBottom: 2,
               }}
             >
-              {item.label}
-            </button>
-          ))}
+              <span
+                style={{
+                  fontSize: 9,
+                  color: "#A9B0B6",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                }}
+              >
+                HP
+              </span>
+              <span
+                style={{ fontSize: 9, color: hpColor, fontFamily: "monospace" }}
+              >
+                {hp}
+              </span>
+            </div>
+            <div
+              style={{
+                height: 5,
+                background: "rgba(255,255,255,0.1)",
+                borderRadius: 3,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${hpPct}%`,
+                  height: "100%",
+                  borderRadius: 3,
+                  background: hpColor,
+                  transition: "width 0.15s",
+                }}
+              />
+            </div>
+          </div>
 
-          <button
-            type="button"
-            data-ocid="menu.back.button"
-            style={{
-              marginTop: 8,
-              width: 240,
-              padding: "14px 0",
-              background: "rgba(63,174,90,0.9)",
-              border: "none",
-              borderRadius: 10,
-              color: "#000",
-              fontFamily: "monospace",
-              fontWeight: 800,
-              fontSize: 14,
-              letterSpacing: "0.1em",
-              cursor: "pointer",
-            }}
-            onClick={() => {
-              setScreen("game");
-              setMenuOpen(false);
-            }}
-          >
-            ▶ BACK TO GAME
-          </button>
+          {/* Score center */}
+          <div style={{ textAlign: "center", minWidth: 90 }}>
+            <div
+              style={{
+                fontFamily: "monospace",
+                fontSize: 16,
+                fontWeight: 700,
+                color: "#3FAE5A",
+                letterSpacing: "0.08em",
+              }}
+            >
+              {String(score).padStart(6, "0")}
+            </div>
+            <div
+              style={{ fontFamily: "monospace", fontSize: 8, color: "#4A545D" }}
+            >
+              HI: {String(profile.highScore).padStart(6, "0")}
+            </div>
+          </div>
+
+          {/* XP bar */}
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                marginBottom: 2,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 9,
+                  color: "#A9B0B6",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                }}
+              >
+                XP
+              </span>
+              <span
+                style={{
+                  fontSize: 9,
+                  color: "#2E7BD6",
+                  fontFamily: "monospace",
+                }}
+              >
+                Lv.{currentLevel}
+              </span>
+            </div>
+            <div
+              style={{
+                height: 5,
+                background: "rgba(255,255,255,0.1)",
+                borderRadius: 3,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${xpPct}%`,
+                  height: "100%",
+                  borderRadius: 3,
+                  background: "#2E7BD6",
+                  transition: "width 0.15s",
+                }}
+              />
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Screen overlays (non-game screens) */}
-      {screen !== "game" && (
+      {/* ── START / PAUSE button — top right (game tab only) ────────────── */}
+      {tab === "game" && (
+        <button
+          type="button"
+          data-ocid="game.start.button"
+          style={{
+            ...btnBase,
+            top: 56,
+            right: 10,
+            width: 80,
+            height: 36,
+            background:
+              getGs().phase === "playing"
+                ? "rgba(42,80,60,0.7)"
+                : "rgba(63,174,90,0.85)",
+            borderRadius: 8,
+            border: `1px solid ${
+              getGs().phase === "playing" ? "rgba(63,174,90,0.4)" : "#60CF80"
+            }`,
+            color: "#FFF",
+            fontSize: 11,
+            letterSpacing: "0.08em",
+          }}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            handleStart();
+          }}
+        >
+          {getGs().phase === "playing"
+            ? "PAUSE"
+            : getGs().phase === "paused"
+              ? "RESUME"
+              : "START"}
+        </button>
+      )}
+
+      {/* ── Auth badge (game tab, top-left below HUD) ───────────────────── */}
+      {tab === "game" && (
+        <div
+          style={{
+            position: "absolute",
+            top: 56,
+            left: 10,
+            zIndex: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          {isLoggedIn ? (
+            <>
+              <Badge
+                style={{
+                  fontSize: 10,
+                  background: "rgba(63,174,90,0.15)",
+                  borderColor: "rgba(63,174,90,0.4)",
+                  color: "#3FAE5A",
+                  cursor: "default",
+                }}
+              >
+                Lv.{profile.level} {profile.displayName || "Runner"}
+              </Badge>
+              <button
+                type="button"
+                data-ocid="game.logout.button"
+                onClick={clear}
+                style={{
+                  fontSize: 9,
+                  padding: "3px 8px",
+                  background: "rgba(0,0,0,0.5)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 6,
+                  color: "#6A7480",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  letterSpacing: "0.06em",
+                }}
+              >
+                OUT
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              data-ocid="game.login.button"
+              onClick={login}
+              disabled={isLoggingIn}
+              style={{
+                fontSize: 10,
+                padding: "5px 12px",
+                background: "rgba(43,51,58,0.85)",
+                border: "1px solid rgba(74,84,93,0.7)",
+                borderRadius: 6,
+                color: "#E7E7E7",
+                fontFamily: "monospace",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                cursor: "pointer",
+              }}
+            >
+              {isLoggingIn ? "..." : "LOGIN"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Touch controls (game tab only) — bottom offset by tab bar ──── */}
+      {tab === "game" && (
+        <>
+          {/* LEFT arrow */}
+          <button
+            type="button"
+            style={{
+              ...btnBase,
+              bottom: TAB_BAR_H + 20,
+              left: 12,
+              width: 88,
+              height: 68,
+              background: "rgba(0,0,0,0.5)",
+              borderRadius: 14,
+              border: "2px solid rgba(255,255,255,0.15)",
+              color: "#fff",
+              fontSize: 32,
+            }}
+            {...makePointerHandlers(() => canvasRef.current?.pressLeft())}
+            aria-label="Move left"
+            data-ocid="game.left.button"
+          >
+            ◀
+          </button>
+
+          {/* RIGHT arrow */}
+          <button
+            type="button"
+            style={{
+              ...btnBase,
+              bottom: TAB_BAR_H + 20,
+              left: 112,
+              width: 88,
+              height: 68,
+              background: "rgba(0,0,0,0.5)",
+              borderRadius: 14,
+              border: "2px solid rgba(255,255,255,0.15)",
+              color: "#fff",
+              fontSize: 32,
+            }}
+            {...makePointerHandlers(() => canvasRef.current?.pressRight())}
+            aria-label="Move right"
+            data-ocid="game.right.button"
+          >
+            ▶
+          </button>
+
+          {/* SPIN */}
+          <button
+            type="button"
+            style={{
+              ...btnBase,
+              bottom: TAB_BAR_H + 100,
+              right: 92,
+              width: 72,
+              height: 52,
+              background: gs.spinning
+                ? "rgba(46,123,214,0.7)"
+                : "rgba(46,123,214,0.45)",
+              borderRadius: "50%",
+              border: "2px solid #4A8FD6",
+              color: "#fff",
+              fontSize: 11,
+              letterSpacing: "0.05em",
+              boxShadow: gs.spinning ? "0 0 16px rgba(46,123,214,0.8)" : "none",
+            }}
+            {...makePointerHandlers(() => canvasRef.current?.pressSpin())}
+            aria-label="Spin move"
+            data-ocid="game.spin.button"
+          >
+            SPIN
+          </button>
+
+          {/* TURBO */}
+          <button
+            type="button"
+            style={{
+              ...btnBase,
+              bottom: TAB_BAR_H + 100,
+              right: 12,
+              width: 72,
+              height: 52,
+              background: gs.turboActive
+                ? "rgba(198,58,58,0.7)"
+                : "rgba(198,58,58,0.45)",
+              borderRadius: "50%",
+              border: "2px solid #E05050",
+              color: "#fff",
+              fontSize: 11,
+              letterSpacing: "0.05em",
+              boxShadow: gs.turboActive
+                ? "0 0 16px rgba(198,58,58,0.8)"
+                : "none",
+            }}
+            {...makePointerHandlers(() => canvasRef.current?.pressTurbo())}
+            aria-label="Turbo boost"
+            data-ocid="game.turbo.button"
+          >
+            TURBO
+          </button>
+
+          {/* HURDLE */}
+          <button
+            type="button"
+            style={{
+              ...btnBase,
+              bottom: TAB_BAR_H + 24,
+              right: 40,
+              width: 96,
+              height: 60,
+              background: "rgba(63,174,90,0.45)",
+              borderRadius: "50%",
+              border: "2px solid #50C860",
+              color: "#fff",
+              fontSize: 11,
+              letterSpacing: "0.05em",
+            }}
+            {...makePointerHandlers(() => canvasRef.current?.pressHurdle())}
+            aria-label="Hurdle jump"
+            data-ocid="game.hurdle.button"
+          >
+            HURDLE
+          </button>
+        </>
+      )}
+
+      {/* ── Non-game tab panels ───────────────────────────────────────────── */}
+      {tab !== "game" && (
         <div
           data-scroll="true"
           style={{
             position: "absolute",
             inset: 0,
-            background: "rgba(10,12,15,0.97)",
+            background: "rgba(10,12,15,0.98)",
             zIndex: 40,
             overflowY: "auto",
             WebkitOverflowScrolling:
               "touch" as React.CSSProperties["WebkitOverflowScrolling"],
+            paddingBottom: TAB_BAR_H + 8,
           }}
         >
-          {/* Back button */}
+          {/* Top bar with title + auth */}
           <div
             style={{
               position: "sticky",
               top: 0,
               zIndex: 41,
               background: "rgba(10,12,15,0.98)",
-              padding: "12px 16px",
-              borderBottom: "1px solid rgba(42,49,56,0.6)",
+              padding: "10px 14px",
+              borderBottom: "1px solid rgba(63,174,90,0.15)",
               display: "flex",
               alignItems: "center",
-              gap: 12,
+              justifyContent: "space-between",
             }}
           >
-            <button
-              type="button"
-              data-ocid="nav.back.button"
-              onClick={() => setScreen("game")}
-              style={{
-                background: "none",
-                border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: 8,
-                color: "#A9B0B6",
-                padding: "6px 14px",
-                fontSize: 11,
-                fontFamily: "monospace",
-                fontWeight: 700,
-                cursor: "pointer",
-                letterSpacing: "0.08em",
-              }}
-            >
-              ◀ BACK
-            </button>
             <span
               style={{
                 fontFamily: "monospace",
-                fontWeight: 700,
+                fontWeight: 800,
                 fontSize: 13,
                 color: "#3FAE5A",
-                letterSpacing: "0.1em",
+                letterSpacing: "0.12em",
               }}
             >
-              {screen === "skill_tree" && "SKILL TREE"}
-              {screen === "legends" && "LEGENDS"}
-              {screen === "leaderboard" && "LEADERBOARD"}
-              {screen === "how_to_play" && "HOW TO PLAY"}
-              {screen === "password" && "PASSWORD SAVE"}
+              {tab === "skills" && "⚡ SKILL TREE"}
+              {tab === "legends" && "🌟 LEGENDS"}
+              {tab === "scores" && "🏆 LEADERBOARD"}
+              {tab === "howto" && "❓ HOW TO PLAY"}
+              {tab === "save" && "💾 PASSWORD SAVE"}
             </span>
+
+            {/* Auth controls in panel header */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {isLoggedIn ? (
+                <>
+                  <Badge
+                    style={{
+                      fontSize: 10,
+                      background: "rgba(63,174,90,0.15)",
+                      borderColor: "rgba(63,174,90,0.4)",
+                      color: "#3FAE5A",
+                    }}
+                  >
+                    Lv.{profile.level} {profile.displayName || "Runner"}
+                  </Badge>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={clear}
+                    data-ocid="panel.logout.button"
+                    style={{
+                      fontSize: 10,
+                      padding: "3px 10px",
+                      height: "auto",
+                      borderColor: "rgba(255,255,255,0.12)",
+                      color: "#6A7480",
+                    }}
+                  >
+                    LOGOUT
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={login}
+                  disabled={isLoggingIn}
+                  data-ocid="panel.login.button"
+                  style={{
+                    fontSize: 11,
+                    padding: "5px 16px",
+                    height: "auto",
+                    background: "rgba(43,51,58,0.9)",
+                    border: "1px solid rgba(74,84,93,0.7)",
+                    color: "#E7E7E7",
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  {isLoggingIn ? "CONNECTING..." : "LOGIN"}
+                </Button>
+              )}
+            </div>
           </div>
 
-          {screen === "leaderboard" && <Leaderboard />}
-          {screen === "skill_tree" && (
+          {/* Tab content */}
+          {tab === "scores" && <Leaderboard />}
+          {tab === "skills" && (
             <SkillTree
               profile={profile}
               onProfileUpdate={handleProfileUpdate}
               isLoggedIn={isLoggedIn}
             />
           )}
-          {screen === "legends" && (
+          {tab === "legends" && (
             <Legends
               profile={profile}
               onProfileUpdate={handleProfileUpdate}
@@ -815,8 +779,8 @@ export default function App() {
               activeLegend={activeLegend}
             />
           )}
-          {screen === "how_to_play" && <HowToPlay />}
-          {screen === "password" && (
+          {tab === "howto" && <HowToPlay />}
+          {tab === "save" && (
             <PasswordSave
               profile={profile}
               onLoad={(loaded) => {
@@ -832,7 +796,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Play Result overlay (tackled — not game over) */}
+      {/* ── Play Result overlay (tackled — not game over) ─────────────────── */}
       {showPlayResult && playResult && (
         <div
           data-ocid="play_result.panel"
@@ -846,6 +810,7 @@ export default function App() {
             alignItems: "center",
             justifyContent: "center",
             gap: 16,
+            paddingBottom: TAB_BAR_H,
           }}
         >
           <div
@@ -1055,7 +1020,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Game Over dialog (save score) */}
+      {/* ── Game Over dialog ────────────────────────────────────────────────── */}
       <Dialog
         open={showGameOver}
         onOpenChange={(open) => !open && setShowGameOver(false)}
@@ -1177,6 +1142,65 @@ export default function App() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Bottom Tab Bar ──────────────────────────────────────────────────── */}
+      <nav
+        data-ocid="nav.tab_bar"
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: TAB_BAR_H,
+          background: "rgba(8,10,12,0.97)",
+          borderTop: "1px solid rgba(63,174,90,0.2)",
+          display: "flex",
+          zIndex: 50,
+        }}
+      >
+        {TABS.map((t) => {
+          const isActive = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              data-ocid={`nav.${t.id}.tab`}
+              onClick={() => setTab(t.id)}
+              style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 2,
+                background: isActive ? "rgba(63,174,90,0.2)" : "transparent",
+                borderTop: isActive
+                  ? "2px solid #3FAE5A"
+                  : "2px solid transparent",
+                border: "none",
+                borderTopWidth: 2,
+                borderTopStyle: "solid",
+                borderTopColor: isActive ? "#3FAE5A" : "transparent",
+                color: isActive ? "#3FAE5A" : "#6A7480",
+                fontFamily: "monospace",
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                cursor: "pointer",
+                transition: "color 0.15s, background 0.15s",
+                WebkitTapHighlightColor: "transparent",
+                userSelect: "none",
+                WebkitUserSelect: "none",
+                touchAction: "manipulation",
+                padding: 0,
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>{t.icon}</span>
+              <span>{t.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       <Toaster
         theme="dark"

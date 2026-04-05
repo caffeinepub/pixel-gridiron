@@ -1,6 +1,7 @@
 /**
  * spawner.ts — reads FIELD_MAP and pushes obstacles into gs.obstacles.
- * Called by the game loop when fieldZ crosses nextSpawnZ.
+ * Tile 8 = endzone. When the player reaches an endzone row it triggers touchdown.
+ * The map plays once end-to-end (no looping) — 300 tiles of football field.
  */
 import {
   DEFENDER_STATS,
@@ -14,16 +15,27 @@ import {
   TILE_DEF_TYPE,
   type TileCode,
 } from "../types/game";
+import { endPlay } from "./collision";
 
 export function tickSpawner(gs: GameState): void {
+  // Advance through map rows as field progresses
   while (gs.fieldZ >= gs.nextSpawnZ && gs.mapRow < MAP_ROWS) {
+    const row = FIELD_MAP[gs.mapRow];
+    if (row && row[0] === "8") {
+      // Endzone row reached — touchdown!
+      gs.touchdown = true;
+      endPlay(gs);
+      return;
+    }
     spawnRow(gs, gs.mapRow);
     gs.mapRow++;
     gs.nextSpawnZ += ROW_SPACING;
   }
-  // Loop map endlessly
-  if (gs.mapRow >= MAP_ROWS) {
-    gs.mapRow = 0;
+
+  // If we've exhausted the map without hitting endzone, loop from wave 2
+  // (skip scrimmage line 99999 at row 0)
+  if (gs.mapRow >= MAP_ROWS && !gs.touchdown) {
+    gs.mapRow = 2;
     gs.nextSpawnZ = gs.fieldZ + ROW_SPACING;
   }
 }
@@ -35,6 +47,7 @@ function spawnRow(gs: GameState, rowIdx: number): void {
   let emojiIdx = 0;
   for (let lane = 0; lane < 5; lane++) {
     const code = Number.parseInt(row[lane]) as TileCode;
+    // 0 = open, 8 = endzone, 9 = startline — nothing to spawn
     if (code === 0 || code === 8 || code === 9) continue;
 
     const defType = TILE_DEF_TYPE[code];
