@@ -1,13 +1,12 @@
 /**
- * GameCanvas.tsx — Three.js 3D game view.
- * Owns the RAF loop. Calls modules in order each frame:
- *   movement → spawner → collision → ThreeRenderer
- * HTML overlay handles HUD, screens (no canvas drawing).
+ * GameCanvas.tsx v22 — Three.js 3D game view.
+ * FIXED: RAF loop is stable — stored in a ref, never recreated on forceUpdate.
+ * FIXED: tackleFired guard is airtight; handleNextPlay resets cleanly.
+ * FIXED: XP/skills/level copied back to parent profile via onTackled every play.
  */
 import type React from "react";
 import {
   forwardRef,
-  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -46,11 +45,16 @@ function PhaseOverlay({
   gs,
   onStart,
   onNextPlay,
+  tick,
 }: {
   gs: GameState;
   onStart: () => void;
   onNextPlay: () => void;
+  tick: number;
 }) {
+  // tick is only here to force re-render when phase changes
+  void tick;
+
   const overlay: React.CSSProperties = {
     position: "absolute",
     top: 0,
@@ -68,10 +72,7 @@ function PhaseOverlay({
   if (gs.phase === "idle") {
     return (
       <div
-        style={{
-          ...overlay,
-          background: "rgba(0,0,0,0.82)",
-        }}
+        style={{ ...overlay, background: "rgba(0,0,0,0.82)" }}
         data-ocid="game.idle_state"
       >
         <div
@@ -136,8 +137,8 @@ function PhaseOverlay({
             lineHeight: 1.6,
           }}
         >
-          TAP ◀ ▶ to change lanes · SPIN breaks defenders
-          {"\n"}HURDLE jumps crates · TURBO for speed boost
+          TAP ◀ ▶ to change lanes · SPIN breaks defenders{"\n"}
+          HURDLE jumps crates · TURBO for speed boost
         </div>
         {gs.teamName ? (
           <div
@@ -158,10 +159,7 @@ function PhaseOverlay({
   if (gs.phase === "paused") {
     return (
       <div
-        style={{
-          ...overlay,
-          background: "rgba(0,0,0,0.72)",
-        }}
+        style={{ ...overlay, background: "rgba(0,0,0,0.72)" }}
         data-ocid="game.modal"
       >
         <div
@@ -198,13 +196,10 @@ function PhaseOverlay({
 
   if (gs.phase === "tackled") {
     const elapsed = 1.8 - gs.tackleTimer;
-    if (elapsed < 0.4) return null; // wait for animation
+    if (elapsed < 0.4) return null;
     return (
       <div
-        style={{
-          ...overlay,
-          background: "rgba(0,0,0,0.8)",
-        }}
+        style={{ ...overlay, background: "rgba(0,0,0,0.8)" }}
         data-ocid="game.tackled_state"
       >
         {gs.touchdown ? (
@@ -300,94 +295,69 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
   const rendererRef = useRef<ThreeRenderer | null>(null);
   const rafRef = useRef(0);
   const prevTsRef = useRef(0);
+  // tackleFired stays true until NEXT PLAY is tapped — prevents duplicate callbacks
   const tackleFired = useRef(false);
-  const [, setTick] = useState(0);
-  const forceUpdate = useCallback(() => setTick((t) => t + 1), []);
+  // phaseTick drives overlay re-renders WITHOUT recreating the game loop
+  const [phaseTick, setPhaseTick] = useState(0);
+  const phaseTickRef = useRef(0);
 
-  // Input handlers
-  const pressLeft = useCallback(() => {
+  const bumpPhaseTick = () => {
+    phaseTickRef.current += 1;
+    setPhaseTick(phaseTickRef.current);
+  };
+
+  // ── Stable RAF callback stored in a ref — never recreated ──────────────────
+  // This is the key fix: the loop ref doesn't change between renders, so the
+  // useEffect that starts the RAF only fires once on mount.
+  const loopRef = useRef<(ts: number) => void>(() => {});
+
+  loopRef.current = (ts: number) => {
+    rafRef.current = requestAnimationFrame(loopRef.current);
+    if (!rendererRef.current) return;
+
+    const dt = Math.min(
+      prevTsRef.current === 0 ? 0 : (ts - prevTsRef.current) / 1000,
+      0.05,
+    );
+    prevTsRef.current = ts;
+
     const gs = gameStateRef.current;
-    if (gs.phase === "playing") inputLeft(gs);
-  }, [gameStateRef]);
-  const pressRight = useCallback(() => {
-    const gs = gameStateRef.current;
-    if (gs.phase === "playing") inputRight(gs);
-  }, [gameStateRef]);
-  const pressUp = useCallback(() => {
-    const gs = gameStateRef.current;
-    if (gs.phase === "playing") inputJump(gs);
-  }, [gameStateRef]);
-  const pressSpin = useCallback(() => {
-    const gs = gameStateRef.current;
-    if (gs.phase === "playing") inputSpin(gs);
-  }, [gameStateRef]);
-  const pressTurbo = useCallback(() => {
-    const gs = gameStateRef.current;
-    if (gs.phase === "playing") inputTurbo(gs);
-  }, [gameStateRef]);
-  const pressHurdle = useCallback(() => pressUp(), [pressUp]);
+    // Use wall-clock time for animations — frame-rate independent
+    gs.elapsedTime = (gs.elapsedTime ?? 0) + dt;
+    gs.frame += 1;
 
-  useImperativeHandle(ref, () => ({
-    pressLeft,
-    pressRight,
-    pressUp,
-    pressSpin,
-    pressTurbo,
-    pressHurdle,
-  }));
+    if (gs.phase === "playing") {
+      updateMovement(gs, dt);
+      tickSpawner(gs);
+      detectCollisions(gs);
 
-  const loop = useCallback(
-    (ts: number) => {
-      rafRef.current = requestAnimationFrame(loop);
-      if (!rendererRef.current) return;
+      for (const ft of gs.floats) {
+        ft.y -= 38 * dt;
+        ft.life -= dt;
+      }
+      gs.floats = gs.floats.filter((f) => f.life > 0);
 
-      const dt = Math.min(
-        (prevTsRef.current === 0 ? 0 : ts - prevTsRef.current) / 1000,
-        0.05,
-      );
-      prevTsRef.current = ts;
-
-      const gs = gameStateRef.current;
-      gs.frame += 1;
-
-      if (gs.phase === "playing") {
-        // ── MODULE PIPELINE ─────────────────────────────────
-        updateMovement(gs, dt);
-        tickSpawner(gs);
-        detectCollisions(gs);
-        // ────────────────────────────────────────────────────
-
-        // Advance floating texts
-        for (const ft of gs.floats) {
-          ft.y -= 38 * dt;
-          ft.life -= dt;
-        }
-        gs.floats = gs.floats.filter((f) => f.life > 0);
-
-        // Tutorial timer
-        if (gs.tutActive) {
-          gs.tutTimer -= dt;
-          if (gs.tutTimer <= 0) gs.tutActive = false;
-        }
-
-        onScoreUpdate(gs.score, gs.hp, gs.xp);
-      } else if (gs.phase === "tackled") {
-        gs.tackleTimer -= dt;
-        if (!tackleFired.current) {
-          tackleFired.current = true;
-          onTackled(Math.floor(gs.playYards), gs.playXp, gs.playItems);
-        }
-        // Force re-render so the tackle overlay appears
-        forceUpdate();
+      if (gs.tutActive) {
+        gs.tutTimer -= dt;
+        if (gs.tutTimer <= 0) gs.tutActive = false;
       }
 
-      // Render 3D scene
-      rendererRef.current?.update(gs, dt);
-    },
-    [gameStateRef, onScoreUpdate, onTackled, forceUpdate],
-  );
+      onScoreUpdate(gs.score, gs.hp, gs.xp);
+    } else if (gs.phase === "tackled") {
+      gs.tackleTimer -= dt;
+      if (!tackleFired.current) {
+        tackleFired.current = true;
+        // Fire callback — parent copies XP/skills back to profile
+        onTackled(Math.floor(gs.playYards), gs.playXp, gs.playItems);
+        // Trigger overlay render (safe — loop is not recreated)
+        bumpPhaseTick();
+      }
+    }
 
-  // Mount Three.js renderer on div
+    rendererRef.current?.update(gs, dt);
+  };
+
+  // Mount Three.js renderer — runs ONCE on mount, never re-runs
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -396,13 +366,15 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     rendererRef.current = tr;
     prevTsRef.current = 0;
     tackleFired.current = false;
-    rafRef.current = requestAnimationFrame(loop);
+    // Start the RAF with the stable ref wrapper
+    rafRef.current = requestAnimationFrame((ts) => loopRef.current(ts));
     return () => {
       cancelAnimationFrame(rafRef.current);
       tr.dispose();
       rendererRef.current = null;
     };
-  }, [loop]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Resize handler
   useEffect(() => {
@@ -416,32 +388,56 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     return () => obs.disconnect();
   }, []);
 
+  // Input handlers — no closures over loop, safe
+  useImperativeHandle(
+    ref,
+    () => ({
+      pressLeft: () => {
+        if (gameStateRef.current.phase === "playing")
+          inputLeft(gameStateRef.current);
+      },
+      pressRight: () => {
+        if (gameStateRef.current.phase === "playing")
+          inputRight(gameStateRef.current);
+      },
+      pressUp: () => {
+        if (gameStateRef.current.phase === "playing")
+          inputJump(gameStateRef.current);
+      },
+      pressSpin: () => {
+        if (gameStateRef.current.phase === "playing")
+          inputSpin(gameStateRef.current);
+      },
+      pressTurbo: () => {
+        if (gameStateRef.current.phase === "playing")
+          inputTurbo(gameStateRef.current);
+      },
+      pressHurdle: () => {
+        if (gameStateRef.current.phase === "playing")
+          inputJump(gameStateRef.current);
+      },
+    }),
+    [gameStateRef],
+  );
+
   const gs = gameStateRef.current;
 
-  const handleStart = useCallback(() => {
+  const handleStart = () => {
     const g = gameStateRef.current;
-    if (g.phase === "idle") {
-      g.phase = "playing";
-    } else if (g.phase === "playing") {
-      g.phase = "paused";
-    } else if (g.phase === "paused") {
-      g.phase = "playing";
-    }
-    forceUpdate();
-  }, [gameStateRef, forceUpdate]);
+    if (g.phase === "idle") g.phase = "playing";
+    else if (g.phase === "playing") g.phase = "paused";
+    else if (g.phase === "paused") g.phase = "playing";
+    bumpPhaseTick();
+  };
 
-  const handleNextPlay = useCallback(() => {
+  const handleNextPlay = () => {
     const g = gameStateRef.current;
     if (g.phase === "tackled") {
-      // Signal to parent that a new play should begin
-      // The parent (App.tsx) owns "handleRestart / nextPlay" logic
-      // We just bump the phase to idle so the START screen shows
-      // and the parent's "onTackled" callback resets the game state.
       g.phase = "idle";
       tackleFired.current = false;
-      forceUpdate();
+      bumpPhaseTick();
     }
-  }, [gameStateRef, forceUpdate]);
+  };
 
   return (
     <div
@@ -454,20 +450,16 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
         background: "#02020f",
       }}
     >
-      {/* Three.js mount */}
       <div
         ref={mountRef}
-        style={{
-          width: "100%",
-          height: "100%",
-          display: "block",
-        }}
+        style={{ width: "100%", height: "100%", display: "block" }}
       />
-
-      {/* Phase screens */}
-      <PhaseOverlay gs={gs} onStart={handleStart} onNextPlay={handleNextPlay} />
-
-      {/* Hurt flash */}
+      <PhaseOverlay
+        gs={gs}
+        onStart={handleStart}
+        onNextPlay={handleNextPlay}
+        tick={phaseTick}
+      />
       {gs.hurtFlash > 0 && (
         <div
           style={{

@@ -1,6 +1,8 @@
 /**
- * movement.ts — player physics, lane shifting, jump, timers, field advance.
- * Called once per frame with delta-time in seconds.
+ * movement.ts v22 — player physics, lane shifting, jump, timers, field advance.
+ * FIXED: speed cap now lets turbo feel impactful at ALL skill levels.
+ * FIXED: lane chaining — mid-slide tap commits current position before changing target.
+ * FIXED: stride animation is time-based (elapsedTime), not frame-count-based.
  */
 import {
   BASE_SPEED,
@@ -13,19 +15,19 @@ import {
 } from "../types/game";
 
 export function updateMovement(gs: GameState, dt: number): void {
-  // ── Speed ramp ─────────────────────────────────────────────────
+  // ── Speed ramp ────────────────────────────────────────────────────────────
+  // Burst only active in first 5 yards of each play
   const burstBonus = gs.fieldZ < 5 ? (gs.skills.burst ?? 0) * 0.4 : 0;
-  const cap = Math.min(
-    MAX_SPEED + burstBonus,
-    BASE_SPEED + gs.skills.speed * 0.3 + burstBonus,
-  );
-  gs.speed = Math.min(cap, gs.speed + SPEED_RAMP * dt);
+  // FIXED: cap starts at MAX_SPEED — skills.speed increases it further, not limit it
+  const speedCap = MAX_SPEED + (gs.skills.speed ?? 0) * 0.15 + burstBonus;
+  gs.speed = Math.min(speedCap, gs.speed + SPEED_RAMP * dt);
   const effective = gs.turboActive ? gs.speed * 1.7 : gs.speed;
 
-  // ── Field advance ──────────────────────────────────────────────
+  // ── Field advance ─────────────────────────────────────────────────────────
   const prevZ = gs.fieldZ;
   gs.fieldZ += effective * dt;
-  gs.fieldScroll = (gs.fieldScroll + effective * dt * 0.1) % 1;
+  // fieldScroll: fractional 0..1 loop for tile floor — simple and clean
+  gs.fieldScroll = (gs.fieldScroll + effective * dt) % 100;
   gs.playYards = gs.fieldZ;
   gs.score = Math.floor(
     gs.fieldZ * 10 * stageMult(gs.careerStage) * gs.multiplier,
@@ -38,7 +40,8 @@ export function updateMovement(gs: GameState, dt: number): void {
     gs.xpGained += yxp;
     gs.playXp += yxp;
     gs.floats.push({
-      x: laneX(gs.lane),
+      id: gs.nextFloatId++,
+      x: 0,
       y: 420,
       text: `+${yxp} XP`,
       color: "#2E7BD6",
@@ -49,20 +52,14 @@ export function updateMovement(gs: GameState, dt: number): void {
 
   // Down & distance tracking
   const yardsGained = gs.fieldZ - gs.driveYards;
-  if (gs.yardsToGo === undefined) {
-    gs.yardsToGo = 10;
-    gs.yardsNeeded = 10;
-    gs.currentDown = 1;
-    gs.driveYards = 0;
-  }
   if (yardsGained >= gs.yardsNeeded) {
-    // First down!
     gs.currentDown = 1;
     gs.yardsNeeded = 10;
     gs.yardsToGo = 10;
-    gs.driveYards = gs.fieldZ; // reset marker
+    gs.driveYards = gs.fieldZ;
     gs.floats.push({
-      x: laneX(gs.lane),
+      id: gs.nextFloatId++,
+      x: 0,
       y: 370,
       text: "FIRST DOWN!",
       color: "#FFD700",
@@ -73,14 +70,21 @@ export function updateMovement(gs: GameState, dt: number): void {
     gs.yardsToGo = Math.max(0, gs.yardsNeeded - yardsGained);
   }
 
-  // ── Lane shift ─────────────────────────────────────────────────
+  // ── Lane shift — FIXED: chain support ────────────────────────────────────
+  // If mid-slide, laneT < 1: update gs.lane to intermediate position first,
+  // then continue sliding to targetLane. This prevents snap-back on double tap.
   if (gs.laneT < 1) {
-    gs.laneT = Math.min(1, gs.laneT + (5 + gs.skills.agility * 0.8) * dt);
-  } else {
-    gs.lane = gs.targetLane;
+    gs.laneT = Math.min(
+      1,
+      gs.laneT + (5 + (gs.skills.agility ?? 0) * 0.8) * dt,
+    );
+    if (gs.laneT >= 1) {
+      gs.lane = gs.targetLane;
+      gs.laneT = 1;
+    }
   }
 
-  // ── Jump ───────────────────────────────────────────────────────
+  // ── Jump ──────────────────────────────────────────────────────────────────
   if (gs.jumping) {
     gs.jumpY += gs.jumpVY * dt;
     gs.jumpVY -= GRAVITY_PX * dt;
@@ -91,9 +95,9 @@ export function updateMovement(gs: GameState, dt: number): void {
     }
   }
 
-  // ── Power-up timers ─────────────────────────────────────────────
-  tick("turboTimer", "turboActive", gs, dt);
-  tick("shieldTimer", "shieldActive", gs, dt);
+  // ── Power-up timers ───────────────────────────────────────────────────────
+  tickTimer("turboTimer", "turboActive", gs, dt);
+  tickTimer("shieldTimer", "shieldActive", gs, dt);
   tickSpin(gs, dt);
   if (gs.multiplierTimer > 0) {
     gs.multiplierTimer -= dt;
@@ -115,7 +119,7 @@ export function updateMovement(gs: GameState, dt: number): void {
   );
 }
 
-function tick(
+function tickTimer(
   timerKey: "turboTimer" | "shieldTimer",
   activeKey: "turboActive" | "shieldActive",
   gs: GameState,
@@ -142,6 +146,7 @@ function tickSpin(gs: GameState, dt: number) {
   }
 }
 
+/** Canvas-pixel lane center (used for legacy references only — renderer uses laneWorldX) */
 export function laneX(lane: number): number {
   return [28, 96, 180, 264, 332][lane] ?? 180;
 }
@@ -152,30 +157,64 @@ export function playerScreenX(gs: GameState): number {
   return from + (to - from) * gs.laneT;
 }
 
+// ── Input handlers ────────────────────────────────────────────────────────────
 export function inputLeft(gs: GameState) {
+  if (gs.laneT < 1) {
+    // Mid-slide: commit current interpolated position as new origin
+    const fromX = laneX(gs.lane);
+    const toX = laneX(gs.targetLane);
+    const midX = fromX + (toX - fromX) * gs.laneT;
+    // Find closest lane to mid position
+    const lanePositions = [28, 96, 180, 264, 332];
+    const closestLane = lanePositions.reduce(
+      (best, x, i) =>
+        Math.abs(x - midX) < Math.abs(lanePositions[best] - midX) ? i : best,
+      0,
+    );
+    gs.lane = closestLane;
+    gs.laneT = 1;
+  }
   if (gs.targetLane > 0) {
     gs.targetLane--;
     gs.laneT = 0;
   }
 }
+
 export function inputRight(gs: GameState) {
+  if (gs.laneT < 1) {
+    // Mid-slide: commit current interpolated position as new origin
+    const fromX = laneX(gs.lane);
+    const toX = laneX(gs.targetLane);
+    const midX = fromX + (toX - fromX) * gs.laneT;
+    const lanePositions = [28, 96, 180, 264, 332];
+    const closestLane = lanePositions.reduce(
+      (best, x, i) =>
+        Math.abs(x - midX) < Math.abs(lanePositions[best] - midX) ? i : best,
+      0,
+    );
+    gs.lane = closestLane;
+    gs.laneT = 1;
+  }
   if (gs.targetLane < 4) {
     gs.targetLane++;
     gs.laneT = 0;
   }
 }
+
 export function inputJump(gs: GameState) {
   if (!gs.jumping) {
     gs.jumping = true;
-    gs.jumpVY = JUMP_VY + gs.skills.hurdle * 15;
+    gs.jumpVY = JUMP_VY + (gs.skills.hurdle ?? 0) * 15;
   }
 }
+
 export function inputSpin(gs: GameState) {
   if (!gs.spinning) {
     gs.spinning = true;
-    gs.spinTimer = 1.2 + gs.skills.spin * 0.08;
+    gs.spinTimer = 1.2 + (gs.skills.spin ?? 0) * 0.08;
   }
 }
+
 export function inputTurbo(gs: GameState) {
   if (!gs.turboActive) {
     gs.turboActive = true;

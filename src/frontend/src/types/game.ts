@@ -60,6 +60,7 @@ export interface Obstacle {
 }
 
 export interface FloatingText {
+  id: number; // stable ID for renderer keying
   x: number;
   y: number;
   text: string;
@@ -119,6 +120,8 @@ export interface GameState {
   careerYards: number;
   level: number;
   floats: FloatingText[];
+  nextFloatId: number;
+  elapsedTime: number;
   frame: number;
   tutActive: boolean;
   tutMessage: string;
@@ -684,6 +687,8 @@ export function createGameState(p: PlayerProfile): GameState {
     careerYards: 0,
     level: p.level,
     floats: [],
+    nextFloatId: 0,
+    elapsedTime: 0,
     frame: 0,
     tutActive: true,
     tutMessage: "Pick a lane! Dodge defenders, smash crates, grab power-ups.",

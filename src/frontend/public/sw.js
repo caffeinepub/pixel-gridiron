@@ -1,6 +1,6 @@
 // Pixel Gridiron Service Worker v21
 // Full debug update: precache, offline fallback, error handling, event stubs
-const CACHE_VERSION = 'pixel-gridiron-v21';
+const CACHE_VERSION = 'pixel-gridiron-v22';
 const CACHE_NAME = CACHE_VERSION;
 
 // Critical assets to precache on install

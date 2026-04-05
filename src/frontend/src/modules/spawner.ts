@@ -1,7 +1,7 @@
 /**
- * spawner.ts — reads level-specific FIELD_MAP and pushes obstacles into gs.obstacles.
- * Tile 8 = endzone. When the player reaches an endzone row it triggers touchdown.
- * Uses getFieldMap(gs.careerStage) so each stage has its own formation patterns.
+ * spawner.ts v22 — reads level-specific FIELD_MAP and pushes obstacles.
+ * FIXED: endzone check tests all 5 chars, not just row[0].
+ * FIXED: map loop-back only fires when not already in touchdown/tackled phase.
  */
 import {
   DEFENDER_STATS,
@@ -17,12 +17,14 @@ import {
 import { endPlay } from "./collision";
 
 export function tickSpawner(gs: GameState): void {
+  if (gs.phase !== "playing") return;
   const fieldMap = getFieldMap(gs.careerStage);
   const mapRows = fieldMap.length;
 
   while (gs.fieldZ >= gs.nextSpawnZ && gs.mapRow < mapRows) {
     const row = fieldMap[gs.mapRow];
-    if (row && row[0] === "8") {
+    // FIXED: check full row for endzone, not just first character
+    if (row?.split("").every((c) => c === "8" || c === "0")) {
       gs.touchdown = true;
       endPlay(gs);
       return;
@@ -32,8 +34,8 @@ export function tickSpawner(gs: GameState): void {
     gs.nextSpawnZ += ROW_SPACING;
   }
 
-  // If map exhausted without endzone, loop from wave 2 (skip scrimmage)
-  if (gs.mapRow >= mapRows && !gs.touchdown) {
+  // Map exhausted — loop from wave 2 (skip scrimmage row) only if still playing
+  if (gs.mapRow >= mapRows && !gs.touchdown && gs.phase === "playing") {
     gs.mapRow = 2;
     gs.nextSpawnZ = gs.fieldZ + ROW_SPACING;
   }

@@ -116,6 +116,29 @@ function buildTileMaterial(
   return new THREE.MeshLambertMaterial({ color });
 }
 
+/** Returns just the color number without allocating a material object */
+function _tileMaterialColor(
+  col: number,
+  row: number,
+  stage: CareerStage,
+): number {
+  const isEndzone = row === 0;
+  const isHashRow = row % 5 === 0;
+  const isCheckerDark = (col + row) % 2 === 0;
+  const stageBaseColors: Record<CareerStage, [number, number]> = {
+    HighSchool: [0x3a9a2a, 0x2d8020],
+    College: [0x2a7a20, 0x1e5e18],
+    Pro: [0x143a18, 0x0f2e12],
+    SuperBowl: [0x1a5028, 0x123a1c],
+    HallOfFame: [0x1e4028, 0x163020],
+  };
+  const [lightColor, darkColor] = stageBaseColors[stage];
+  let color = isCheckerDark ? darkColor : lightColor;
+  if (isEndzone) color = 0xb8860b;
+  else if (isHashRow) color = isCheckerDark ? 0x2a8060 : 0x3ab070;
+  return color;
+}
+
 function buildIsoTileGeo(): THREE.BufferGeometry {
   // Flat tile with slight bevel for isometric look
   const geo = new THREE.BoxGeometry(TILE_W - 0.04, 0.06, TILE_D - 0.04);
@@ -698,24 +721,22 @@ export default class ThreeRenderer {
         SKY_COLORS[gs.careerStage],
       );
       this.hemiLight.groundColor = new THREE.Color(GROUND_SKY[gs.careerStage]);
-      // Rebuild tile materials for new stage
+      // FIXED: update tile material colors directly — no new material creation (no leak)
       for (let row = 0; row < TILE_ROWS_VISIBLE; row++) {
         const tr = this.tileRows[row];
         if (!tr) continue;
         for (let col = 0; col < TILE_COLS; col++) {
           const m = tr.meshes[col];
-          (m.material as THREE.MeshLambertMaterial).color.set(
-            buildTileMaterial(col, row, gs.careerStage).color,
-          );
+          const color = _tileMaterialColor(col, row, gs.careerStage);
+          (m.material as THREE.MeshLambertMaterial).color.set(color);
         }
       }
     }
 
     // ── Scroll isometric tile floor ────────────────────────────────────────
-    this.tileScrollOffset =
-      (gs.fieldScroll * TILE_D * TILE_ROWS_VISIBLE * 1.2) %
-      (TILE_ROWS_VISIBLE * TILE_D);
+    // FIXED: fieldScroll is raw world distance; scroll by remainder in tile-pool depth
     const totalDepth = TILE_ROWS_VISIBLE * TILE_D;
+    this.tileScrollOffset = gs.fieldScroll % totalDepth;
     for (let row = 0; row < TILE_ROWS_VISIBLE; row++) {
       const tr = this.tileRows[row];
       if (!tr) continue;
@@ -769,9 +790,9 @@ export default class ThreeRenderer {
       pm.group.rotation.y = 0;
     }
 
-    // Leg stride animation
+    // Leg stride animation - FIXED: time-based (not frame-rate-dependent)
     if (gs.phase === "playing") {
-      const stride = Math.sin(gs.frame * 0.18);
+      const stride = Math.sin((gs.elapsedTime ?? 0) * 10);
       pm.leftUpperLeg.rotation.x = stride * 0.65;
       pm.rightUpperLeg.rotation.x = -stride * 0.65;
       pm.leftLowerLeg.rotation.x = Math.max(0, stride * 0.4);
@@ -795,9 +816,9 @@ export default class ThreeRenderer {
       this._rebuildPlayerAura(gs.turboActive, gs.shieldActive);
     }
     if (pm.auraSprite && needAura) {
-      // Pulse the aura opacity
+      // Pulse the aura opacity - time-based
       (pm.auraSprite.material as THREE.SpriteMaterial).opacity =
-        0.55 + 0.35 * Math.sin(gs.frame * 0.14);
+        0.55 + 0.35 * Math.sin((gs.elapsedTime ?? 0) * 8);
     }
 
     // Shield wireframe sphere
@@ -836,9 +857,8 @@ export default class ThreeRenderer {
     }
 
     // ── Camera smooth follow ───────────────────────────────────────────────
-    this.camera.position.x +=
-      (this.cameraPivotX - this.camera.position.x) * Math.min(1, 6 * dt);
-    this.camera.position.y = 7;
+    // FIXED: single-layer smoothing - camera directly tracks cameraPivotX (no double lag)
+    this.camera.position.x = this.cameraPivotX;
     this.camera.position.z = -11;
     this.camera.lookAt(this.cameraPivotX, 1, 8);
 
@@ -892,28 +912,30 @@ export default class ThreeRenderer {
 
       entry.group.position.set(ox, obs.type === "crate" ? 0.4 : 0, oz);
 
-      // Defender leg stride + face camera
+      // Defender leg stride + face camera - FIXED: time-based
       if (entry.parts && gs.phase === "playing") {
         const offset = obs.id * 1.3;
-        const defStride = Math.sin(gs.frame * 0.15 + offset);
+        const defStride = Math.sin((gs.elapsedTime ?? 0) * 9 + offset);
         entry.parts.leftUpperLeg.rotation.x = defStride * 0.5;
         entry.parts.rightUpperLeg.rotation.x = -defStride * 0.5;
       }
 
-      // Emoji bob
+      // Emoji bob - time-based
       if (entry.type === "emoji") {
-        entry.group.position.y = 0.5 + Math.sin(gs.frame * 0.08) * 0.2;
+        entry.group.position.y =
+          0.5 + Math.sin((gs.elapsedTime ?? 0) * 5) * 0.2;
       }
 
-      // Aura billboard always faces camera for defenders
+      // Aura billboard always faces camera for defenders - time-based
       if (entry.auraSprite) {
         entry.auraSprite.material.opacity =
-          0.4 + 0.15 * Math.sin(gs.frame * 0.1 + obs.id);
+          0.4 + 0.15 * Math.sin((gs.elapsedTime ?? 0) * 6 + obs.id);
       }
     }
 
     // ── Floating text sprites ──────────────────────────────────────────────
-    const activeFloatKeys = new Set(gs.floats.map((_, i) => `ft_${i}`));
+    // FIXED: key by stable ft.id, not array index (prevents label mismatch on array shift)
+    const activeFloatKeys = new Set(gs.floats.map((ft) => `ft_${ft.id}`));
     for (const [key, sprite] of this.floatSprites) {
       if (!activeFloatKeys.has(key)) {
         this.scene.remove(sprite);
@@ -923,8 +945,8 @@ export default class ThreeRenderer {
       }
     }
 
-    gs.floats.forEach((ft, i) => {
-      const key = `ft_${i}`;
+    for (const ft of gs.floats) {
+      const key = `ft_${ft.id}`;
       const alpha = Math.min(1, (ft.life / ft.maxLife) * 2);
       if (!this.floatSprites.has(key)) {
         const sprite = this._buildFloatSprite(ft.text, ft.color);
@@ -938,11 +960,11 @@ export default class ThreeRenderer {
         1.5,
       );
       (sprite.material as THREE.SpriteMaterial).opacity = alpha;
-    });
+    }
 
     // ── Endzone pulse ──────────────────────────────────────────────────────
     if (gs.touchdown) {
-      const pulse = 0.7 + 0.3 * Math.sin(gs.frame * 0.15);
+      const pulse = 0.7 + 0.3 * Math.sin((gs.elapsedTime ?? 0) * 9);
       for (const child of this.endzoneGroup.children) {
         if (child instanceof THREE.Mesh) {
           (child.material as THREE.MeshLambertMaterial).emissiveIntensity =

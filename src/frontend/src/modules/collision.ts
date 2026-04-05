@@ -1,9 +1,7 @@
 /**
- * collision.ts — checks every obstacle against the player each frame.
- * Touchdown is driven by the spawner hitting tile 8 (endzone row), NOT a
- * hardcoded yard distance. This supports variable-length fields.
- *
- * HP BUDGET: 150hp start. Hits cost: DT 25 | LB 20 | DE 18 | CB/S 12
+ * collision.ts v22 — checks every obstacle against the player each frame.
+ * FIXED: removed unused canvas-pixel laneX() call for float positions.
+ *        Renderer positions floats at cameraPivotX (world space) anyway.
  */
 import {
   BREAK_DUR,
@@ -12,7 +10,6 @@ import {
   type GameState,
   stageMult,
 } from "../types/game";
-import { laneX } from "./movement";
 
 const DEFENDER_DAMAGE: Record<string, number> = {
   dt: 25,
@@ -23,10 +20,7 @@ const DEFENDER_DAMAGE: Record<string, number> = {
 };
 
 export function detectCollisions(gs: GameState): void {
-  // Endzone already triggered by spawner — don't process more collisions
   if (gs.touchdown) return;
-
-  const px = laneX(gs.lane);
 
   for (const obs of gs.obstacles) {
     if (obs.broken) continue;
@@ -42,11 +36,11 @@ export function detectCollisions(gs: GameState): void {
 
     const mult = stageMult(gs.careerStage);
 
-    // ── Emoji power-up ────────────────────────────────────────────
+    // ── Emoji power-up ────────────────────────────────────────────────────
     if (obs.emojiPowerUp) {
       const ep = obs.emojiPowerUp;
       gs.playItems.push(ep.emoji);
-      gainXp(gs, 5, px, ep.label, ep.color);
+      gainXp(gs, 5, ep.label, ep.color);
       switch (ep.effectType) {
         case "speed":
         case "turbo":
@@ -58,7 +52,7 @@ export function detectCollisions(gs: GameState): void {
           gs.spinTimer = 1.8;
           break;
         case "extraDown":
-          heal(gs, 40, px);
+          heal(gs, 40);
           break;
         case "star":
           gs.shieldActive = true;
@@ -74,18 +68,17 @@ export function detectCollisions(gs: GameState): void {
       continue;
     }
 
-    // ── Crate ──────────────────────────────────────────────────
+    // ── Crate ──────────────────────────────────────────────────────────────
     if (obs.type === "crate") {
       gainXp(
         gs,
         Math.round(12 * mult),
-        px,
         `+${Math.round(12 * mult)} XP`,
         "#3FAE5A",
       );
       if (obs.powerUp) {
         const pu = obs.powerUp;
-        float(gs, px, 430, `${pu.label}!`, pu.color);
+        addFloat(gs, `${pu.label}!`, pu.color);
         switch (pu.type) {
           case "speed":
             gs.turboActive = true;
@@ -96,52 +89,49 @@ export function detectCollisions(gs: GameState): void {
             gs.shieldTimer = 4;
             break;
           case "extra_down":
-            heal(gs, 25, px);
+            heal(gs, 25);
             break;
           case "multiplier":
             gs.multiplier = 2;
             gs.multiplierTimer = 5;
-            float(gs, px, 410, "2X!", "#D4A017");
+            addFloat(gs, "2X!", "#D4A017");
             break;
         }
       }
       continue;
     }
 
-    // ── Defender hit ──────────────────────────────────────────────
+    // ── Defender hit ──────────────────────────────────────────────────────
     const defType = obs.defenderType!;
     const xpReward = Math.round(DEFENDER_STATS[defType].xpReward * mult);
 
     if (gs.spinning) {
-      gainXp(gs, xpReward * 2, px, "SPIN BREAK!", "#FFD700");
+      gainXp(gs, xpReward * 2, "SPIN BREAK!", "#FFD700");
       continue;
     }
 
     if (gs.shieldActive) {
       gs.shieldActive = false;
       gs.shieldTimer = 0;
-      gainXp(gs, xpReward, px, "BLOCKED!", "#2E7BD6");
+      gainXp(gs, xpReward, "BLOCKED!", "#2E7BD6");
       continue;
     }
 
-    if (gs.skills.power >= 8) {
-      gainXp(gs, xpReward, px, "BULLDOZED!", "#FFD700");
-      continue;
-    }
-
-    if (gs.skills.power >= 5 && defType === "de") {
-      gainXp(gs, xpReward, px, "BOUNCED!", "#FFD700");
+    // Power skill: each 4 ranks adds one bulldoze tier (not a flat >= 8 gate)
+    const powerTier = Math.floor((gs.skills.power ?? 0) / 4);
+    if (powerTier >= 3 || (powerTier >= 2 && defType === "de")) {
+      gainXp(gs, xpReward, "BULLDOZED!", "#FFD700");
       continue;
     }
 
     const shedChance = (gs.skills.breakTackle ?? 0) * 0.08;
     if (Math.random() < shedChance) {
-      gainXp(gs, Math.round(xpReward * 0.5), px, "SHED!", "#FF6B35");
+      gainXp(gs, Math.round(xpReward * 0.5), "SHED!", "#FF6B35");
       continue;
     }
 
     const dmg = DEFENDER_DAMAGE[defType] ?? 18;
-    damage(gs, dmg, px);
+    damage(gs, dmg);
     if (gs.hp <= 0) {
       endPlay(gs);
       return;
@@ -149,44 +139,39 @@ export function detectCollisions(gs: GameState): void {
   }
 }
 
-function damage(gs: GameState, amt: number, px: number) {
+function damage(gs: GameState, amt: number) {
   gs.hp = Math.max(0, gs.hp - amt);
   gs.hurtFlash = 0.4;
-  float(gs, px, 430, `-${amt} HP`, "#C63A3A");
+  addFloat(gs, `-${amt} HP`, "#C63A3A");
 }
 
-function heal(gs: GameState, amt: number, px: number) {
+function heal(gs: GameState, amt: number) {
   gs.hp = Math.min(gs.maxHp, gs.hp + amt);
-  float(gs, px, 430, `+${amt} HP`, "#3FAE5A");
+  addFloat(gs, `+${amt} HP`, "#3FAE5A");
 }
 
-function gainXp(
-  gs: GameState,
-  amt: number,
-  px: number,
-  label: string,
-  color: string,
-) {
+function gainXp(gs: GameState, amt: number, label: string, color: string) {
   gs.xp += amt;
   gs.xpGained += amt;
   gs.playXp += amt;
-  float(gs, px, 430, label, color);
+  addFloat(gs, label, color);
 }
 
-function float(
-  gs: GameState,
-  x: number,
-  y: number,
-  text: string,
-  color: string,
-) {
-  gs.floats.push({ x, y, text, color, life: 1.1, maxLife: 1.1 });
+function addFloat(gs: GameState, text: string, color: string) {
+  gs.floats.push({
+    id: gs.nextFloatId++,
+    x: 0,
+    y: 430,
+    text,
+    color,
+    life: 1.1,
+    maxLife: 1.1,
+  });
 }
 
 export function endPlay(gs: GameState) {
   if (gs.phase !== "playing") return;
   if (!gs.touchdown) {
-    // Advance down
     if (gs.currentDown < 4) {
       gs.currentDown += 1;
     } else {

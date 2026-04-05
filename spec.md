@@ -1,40 +1,47 @@
 # Pixel Gridiron
 
 ## Current State
-- Three.js 3D renderer with rear-view camera, humanoid player/defender meshes
-- Modular codebase: movement.ts, spawner.ts, collision.ts, renderer.ts, game.ts
-- sw.js versioned at pixel-gridiron-v20, basic cache-first strategy
-- manifest.json references icon-192.png/icon-512.png (not yet generated, no actual icon assets)
-- No "install to home screen" prompt in the app UI
-- Field is a flat PlaneGeometry with a texture; no isometric tile floor
-- Characters and defenders are full 3D humanoid builds with CylinderGeometry/BoxGeometry limbs
-- Tile map (FIELD_MAP) has 50 waves of formations; item/defender patterns are mixed but not segmented by level
-- Manifest icons reference missing files — install prompt won't work properly
+V21 ships a Three.js game with modules: GameCanvas.tsx, movement.ts, spawner.ts, collision.ts, renderer.ts, sw.js v21.
+Core bugs identified via full audit:
+- RAF loop gets recreated every forceUpdate call → double RAF, orphaned handles, jank
+- `tackleFired` can fire twice; handleNextPlay races with parent state reset
+- XP/skills stored only in gameStateRef — if App.tsx doesn't copy back to profile between plays, progression is silently lost
+- Lane chaining: double-tap mid-slide snaps back to origin instead of chaining
+- Speed cap formula: MAX_SPEED unreachable until skill rank 13+ (feels weak throughout game)
+- Tile floor scroll has phase discontinuity (periodic floor pop visual jank)
+- Float text sprites are index-keyed not ID-keyed — wrong text shown after array shifts
+- Camera double-smoothed follow produces twitch on lane commit frame
+- Stride animation is frame-rate-dependent not time-based
+- buildTileMaterial leaks 100 material instances per stage change
+- collision.ts float positions use canvas-pixel coords that renderer ignores
 
 ## Requested Changes (Diff)
 
 ### Add
-- **sw.js full debug update**: bump to v21, add precache of critical assets, add better error handling, add push/message event stubs for future, add background-sync stub, and add offline fallback to index.html
-- **Install from home screen icon**: generate 192x192 and 512x512 PWA icons (football field / pixel art style), place in public/assets/icons/, update manifest.json with correct paths. Add an in-app "Install App" banner that fires the beforeinstallprompt event on Android Chrome
-- **Isometric 2D tile floor**: Replace flat PlaneGeometry field with a 5-tile-wide isometric tile grid rendered in Three.js (5 columns x N rows of 64x64 unit isometric tiles, checkerboard turf pattern, yard line markings per row, endzone tiles gold-tinted). The tiles should scroll as the player advances, creating the movement illusion on an isometric perspective
-- **Better character sprites**: Player mesh upgraded — add pixel-art style face texture on helmet, more defined shoulder pad geometry, better leg/arm proportions, add football prop in right hand. Wrap the humanoid in a semi-transparent canvas-texture billboard overlay (front-facing sprite aura) that animates with stride
-- **Better defender sprites**: Each defender type gets a unique color scheme, a distinctive shape modifier (DT=wide/squat, DE=tall/angular, LB=medium/hunched, CB=slim/upright, S=slim with arms out), and a type-specific silhouette wrap (same billboard technique as player)
-- **Level-based formation patterns**: Reorganize FIELD_MAP into 5 named level blocks (HighSchool, College, Pro, SuperBowl, HallOfFame), each ~50-60 rows. Level 1 (HighSchool) = simple spread patterns, gap always open. Level 2 (College) = staggered DE/LB, crate alleys. Level 3 (Pro) = tight formations, power-ups scarce. Level 4 (SuperBowl) = blitz packages, safety nets. Level 5 (HallOfFame) = near-wall formations, forced spin/hurdle patterns
+- Stable float ID counter so float sprites never mismatch text
+- XP/skill/level copy-back from gameStateRef into App profile on every play end
+- Time-based stride animation (uses elapsed seconds, not frame count)
+- Lane-chain support: queuing next target lane mid-slide rather than restarting from origin
 
 ### Modify
-- manifest.json: update icon paths to /assets/icons/icon-192.png and /assets/icons/icon-512.png; add screenshots array stub
-- renderer.ts: replace flat field plane with isometric tile grid; upgrade player/defender mesh builders; add billboard overlay system
-- types/game.ts: update FIELD_MAP to level-segmented patterns (HighSchool through HallOfFame); update MAP_ROWS
-- index.html: add beforeinstallprompt listener and install button markup
+- GameCanvas.tsx: move `loop` out of React render cycle; use a stable ref for the RAF callback; forceUpdate only triggers overlay re-render, not loop restart
+- GameCanvas.tsx: `tackleFired` guard tightened; handleNextPlay waits for parent reset via callback promise or sequential setState
+- movement.ts: fix speed cap so turbo feels impactful at all skill levels; fix lane chain logic
+- renderer.ts: fix tile scroll formula (remove 1.2 multiplier); key float sprites by stable ft.id not array index; remove material leak in buildTileMaterial; fix camera to single-layer smoothing
+- spawner.ts: endzone check full row, not just row[0]; guard against infinite map loop-back
+- collision.ts: remove laneX() call for float positioning (renderer uses cameraPivotX anyway)
+- sw.js: bump to pixel-gridiron-v22
 
 ### Remove
-- Nothing removed; all existing game systems are preserved
+- Dead `yardsToGo === undefined` guard in movement.ts
+- Orphaned canvas-pixel `ft.x` assignment in collision.ts (unused by renderer)
+- 1.2 scroll multiplier causing tile floor pop
 
 ## Implementation Plan
-1. Generate 192x192 and 512x512 PWA icons (pixel-art football field style)
-2. Write new sw.js (v21) with precache, offline fallback, error handling, event stubs
-3. Update manifest.json with correct icon paths + add display_override and screenshots
-4. Update index.html to include install prompt banner logic (beforeinstallprompt)
-5. Rewrite renderer.ts: isometric tile floor (5 cols × scrolling rows), upgraded player mesh with billboard aura, upgraded defender meshes per type with silhouette wraps
-6. Rewrite FIELD_MAP in types/game.ts: 5 level blocks with named formation patterns suited to each stage
-7. Update spawner.ts to use careerStage to select the correct FIELD_MAP block
+1. Rewrite GameCanvas.tsx with stable RAF ref pattern (loop stored in rafCallbackRef, never recreated)
+2. Fix movement.ts: speed cap, lane chaining, time-based stride, remove dead guard
+3. Fix renderer.ts: scroll formula, float ID keying, single-layer camera, material dispose
+4. Fix spawner.ts: full endzone row check
+5. Fix collision.ts: remove unused pixel-coord float positions
+6. Bump sw.js to v22
+7. Validate build
