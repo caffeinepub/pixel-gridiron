@@ -1,6 +1,13 @@
 /**
  * spawner.ts — reads FIELD_MAP and pushes obstacles into gs.obstacles.
  * Called by the game loop when fieldZ crosses nextSpawnZ.
+ *
+ * TILE SYSTEM:
+ *   - Each row in FIELD_MAP is 5 columns (lanes 0-4).
+ *   - ROW_SPACING determines how many yards apart rows are.
+ *   - Obstacles spawn at worldZ = SPAWN_Z and approach the player.
+ *   - worldZ = 0 is the player's tile position (collision zone center).
+ *   - Tile codes: 0=open 1=DE 2=crate 3=powerup 4=LB 5=safety 6=DT 7=corner 8=endzone 9=startline
  */
 import {
   DEFENDER_STATS,
@@ -14,6 +21,7 @@ import {
   TILE_DEF_TYPE,
   type TileCode,
 } from "../types/game";
+import { endPlay } from "./collision";
 
 export function tickSpawner(gs: GameState): void {
   while (gs.fieldZ >= gs.nextSpawnZ && gs.mapRow < MAP_ROWS) {
@@ -31,6 +39,18 @@ export function tickSpawner(gs: GameState): void {
 function spawnRow(gs: GameState, rowIdx: number): void {
   const row = FIELD_MAP[rowIdx];
   if (!row) return;
+
+  // Handle special full-row tile codes
+  const firstCode = Number.parseInt(row[0]) as TileCode;
+
+  // Startline — skip spawning but don't trigger any effect
+  if (firstCode === 9) return;
+
+  // Endzone row — all 5 tiles are 8, trigger touchdown
+  if (row === "88888") {
+    endPlay(gs);
+    return;
+  }
 
   let emojiIdx = 0;
   for (let lane = 0; lane < 5; lane++) {

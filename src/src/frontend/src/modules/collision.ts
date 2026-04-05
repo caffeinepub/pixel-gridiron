@@ -1,19 +1,26 @@
 /**
- * collision.ts — checks every obstacle against the player each frame.
- * An obstacle collides when worldZ <= COLLISION_Z and lane matches player lane.
+ * collision.ts — tile-based collision system.
  *
- * HP BUDGET: player starts at 150hp. Hits cost:
- *   DT: 25hp   DE/LB: 18hp   CB/S: 12hp
- * That means you can take 6+ normal hits before a play ends — readable, fair.
+ * HOW IT WORKS:
+ *   - Each obstacle's worldZ starts at SPAWN_Z and counts DOWN as the player advances.
+ *   - worldZ === 0 means the tile is exactly at the player's ground position.
+ *   - Collision fires when worldZ is within ±HALF_TILE of 0 (the tile IS the trigger, not a float).
+ *   - HALF_TILE = 0.5 tiles — half-tile placement, centered on the tile footprint.
+ *   - Lane match is required: player must be in the same lane column as the tile.
+ *
+ * This eliminates "tackled by nothing" — you only get hit when a visible tile
+ * overlaps your position in both the Z axis and lane column.
  */
 import {
   BREAK_DUR,
-  COLLISION_Z,
   DEFENDER_STATS,
   type GameState,
   stageMult,
 } from "../types/game";
 import { laneX } from "./movement";
+
+// Half-tile tolerance — collision window is 1 full tile wide, centered at z=0
+const HALF_TILE = 0.5;
 
 // Per-type damage values — survivable but meaningful
 const DEFENDER_DAMAGE: Record<string, number> = {
@@ -29,17 +36,19 @@ export function detectCollisions(gs: GameState): void {
 
   for (const obs of gs.obstacles) {
     if (obs.broken) continue;
-    // Must be close enough to collide
-    if (obs.worldZ > COLLISION_Z) continue;
-    // Must be behind the player (not already passed)
-    if (obs.worldZ < -1.5) continue;
-    // Must be in the same lane
+
+    // ── TILE TRIGGER: collision fires when the tile's worldZ is within ±HALF_TILE of 0
+    // worldZ counts down from SPAWN_Z to 0 (player position) and then negative (passed)
+    if (obs.worldZ > HALF_TILE) continue; // tile hasn't reached player yet
+    if (obs.worldZ < -HALF_TILE) continue; // tile has already passed player
+
+    // ── LANE CHECK: player must be in the same tile column
     if (obs.lane !== gs.lane) continue;
 
     // Jump clears crates (need decent air)
     if (gs.jumping && gs.jumpY > 14 && obs.type === "crate") continue;
 
-    // Mark broken — each obstacle can only trigger ONCE
+    // Mark broken — each tile can only trigger ONCE
     obs.broken = true;
     obs.breakTimer = BREAK_DUR;
 
@@ -117,7 +126,6 @@ export function detectCollisions(gs: GameState): void {
     const xpReward = Math.round(DEFENDER_STATS[defType].xpReward * mult);
 
     if (gs.spinning) {
-      // Spinning through a defender — give XP, no damage
       gainXp(gs, xpReward * 2, px, "SPIN BREAK!", "#FFD700");
       continue;
     }
@@ -149,14 +157,14 @@ export function detectCollisions(gs: GameState): void {
     // Take damage
     const dmg = DEFENDER_DAMAGE[defType] ?? 18;
     damage(gs, dmg, px);
-    // Check HP after damage — only end play at zero
     if (gs.hp <= 0) {
       endPlay(gs);
-      return; // stop processing further collisions
+      return;
     }
   }
 
-  // Touchdown check
+  // Touchdown check — tile 8 (endzone) was already processed above;
+  // also trigger on fieldZ to catch map-looping runs
   if (gs.fieldZ >= 100) {
     endPlay(gs);
   }
@@ -198,11 +206,10 @@ function float(
 
 export function endPlay(gs: GameState) {
   if (gs.phase !== "playing") return;
-  // Advance the down
   if (gs.currentDown !== undefined && gs.currentDown < 4) {
     gs.currentDown += 1;
   } else {
-    gs.currentDown = 1; // turnover on downs — reset (new play from here)
+    gs.currentDown = 1;
     gs.yardsNeeded = 10;
     gs.driveYards = gs.fieldZ;
   }

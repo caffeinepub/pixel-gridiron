@@ -14,10 +14,9 @@ export interface Skills {
   agility: number;
   spin: number;
   hurdle: number;
-  // Extended skills — unlocked as career progresses
-  breakTackle: number; // bonus tackle-break chance
-  vision: number; // slows obstacle approach speed
-  burst: number; // explosive first-step acceleration
+  breakTackle: number;
+  vision: number;
+  burst: number;
 }
 
 export interface PlayerProfile {
@@ -50,7 +49,7 @@ export interface EmojiPowerUp {
 export interface Obstacle {
   id: number;
   lane: number;
-  worldZ: number; // distance ahead of player. SPAWN_Z → 0 = collision
+  worldZ: number; // SPAWN_Z → 0 → negative. 0 = player tile position. Collision fires at ±0.5 tiles.
   type: "defender" | "crate";
   hp: number;
   defenderType?: DefenderType;
@@ -81,15 +80,15 @@ export interface PlayResult {
 export interface GameState {
   phase: GamePhase;
   // Field
-  fieldZ: number; // yards run this play
-  fieldScroll: number; // 0..1 drives ground animation
-  speed: number; // yards/sec
+  fieldZ: number;
+  fieldScroll: number;
+  speed: number;
   // Player
-  lane: number; // current display lane (0-4)
+  lane: number;
   targetLane: number;
-  fromLane: number; // fractional lane we are shifting FROM (handles mid-shift direction changes)
-  laneT: number; // 0..1 lane shift progress
-  jumpY: number; // pixels above ground
+  fromLane: number;
+  laneT: number;
+  jumpY: number;
   jumpVY: number;
   jumping: boolean;
   spinning: boolean;
@@ -129,7 +128,7 @@ export interface GameState {
   level: number;
   // Visuals
   floats: FloatingText[];
-  frame: number; // raw frame counter
+  frame: number;
   // Tutorial
   tutActive: boolean;
   tutMessage: string;
@@ -141,7 +140,7 @@ export interface GameState {
   currentDown: number;
   yardsNeeded: number;
   yardsToGo: number;
-  driveYards: number; // yards gained since last first down / start of drive
+  driveYards: number;
 }
 
 // ── Canvas ────────────────────────────────────────────────────────────────────
@@ -149,44 +148,45 @@ export const CW = 360;
 export const CH = 640;
 export const HORIZON_Y = 168;
 export const GROUND_Y = CH;
-export const PLAYER_Y = CH - 82; // player feet screen Y
+export const PLAYER_Y = CH - 82;
 export const VANISH_X = CW / 2;
 
-// Lane centers at screen bottom (wide) and at horizon (narrow)
 export const LANE_BOT: readonly number[] = [28, 96, 180, 264, 332];
 export const LANE_HOR: readonly number[] = [161, 170, 180, 190, 199];
 
 // ── World physics ─────────────────────────────────────────────────────────────
-export const SPAWN_Z = 10; // obstacles spawn 10 yards ahead — visible within ~2s
-export const COLLISION_Z = 1.6; // yards — collision fires here
-export const BASE_SPEED = 5.0; // yards/sec — snappy feel from snap
+export const SPAWN_Z = 10; // obstacles spawn 10 yards ahead
+export const BASE_SPEED = 5.0;
 export const MAX_SPEED = 9.0;
-export const SPEED_RAMP = 0.08; // yards/sec per second
-export const ROW_SPACING = 8; // yards between tile rows — tight waves
-export const FIRST_ROW_Z = 3; // first obstacle spawns almost immediately
-export const GRAVITY_PX = 600; // px/sec² for jump
-export const JUMP_VY = 220; // px/sec initial jump velocity
-export const BREAK_DUR = 0.33; // seconds for break particle animation
+export const SPEED_RAMP = 0.08;
+export const ROW_SPACING = 8; // yards between tile map rows
+export const FIRST_ROW_Z = 3; // first obstacle row triggers at 3 yards
+export const GRAVITY_PX = 600;
+export const JUMP_VY = 220;
+export const BREAK_DUR = 0.33;
 
 // ── Tile map ──────────────────────────────────────────────────────────────────
 // 0=open 1=DE 2=crate 3=powerup 4=LB 5=safety 6=DT 7=corner 8=endzone 9=startline
 export const FIELD_MAP: readonly string[] = [
+  "99999", // startline — no spawn
   "00000",
   "10101", // DE rush — two gaps to dodge through
   "00000",
   "06060", // DT gap — huge DTs, go middle or edges
   "00000",
+  "00000",
   "20200", // crates — smash for loot
-  "02020",
+  "02000",
   "00000",
   "30032", // powerups + crate
   "00223",
   "00600", // lone DT in center
   "02604",
   "00000",
-  "70007", // corners wide — flanks only
+  "00007",
   "78870", // corners + safeties spread
   "03200",
+  "00000",
   "00000",
   "02000",
   "02220", // crate alley
@@ -194,11 +194,9 @@ export const FIELD_MAP: readonly string[] = [
   "00000",
   "33333", // full powerup row — grab them!
   "00000",
-  "44040", // linebackers
   "00000",
-  "16161", // mixed defenders
   "00000",
-  "20202", // crate wall
+  "70007",
   "00000",
   "88888", // endzone
 ] as const;
@@ -321,7 +319,6 @@ export function xpForNextLevel(level: number): number {
   return level * level * 50;
 }
 
-// Alias for backwards compatibility
 export const xpForLevel = xpForNextLevel;
 
 export const defaultProfile: PlayerProfile = {
@@ -368,7 +365,7 @@ export function createGameState(p: PlayerProfile): GameState {
     shieldActive: false,
     shieldTimer: 0,
     hurtFlash: 0,
-    hp: 150, // starts at 150 — survivable hits
+    hp: 150,
     maxHp: 150,
     xp: p.xp,
     xpGained: 0,
@@ -404,7 +401,6 @@ export function createGameState(p: PlayerProfile): GameState {
   };
 }
 
-// Backwards-compat aliases
 export const CAREER_STAGE_NAMES = STAGE_NAMES;
 export const CAREER_STAGE_XP = STAGE_XP;
 export { stageMult as careerStageMultiplier };

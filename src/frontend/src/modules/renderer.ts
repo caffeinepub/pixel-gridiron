@@ -187,6 +187,57 @@ function drawFloor(
   }
 }
 
+// ── Spin arc effect ───────────────────────────────────────────────────────────
+// Sweeping gold arc at waist height — reads as arms cutting through air.
+// No Y-axis scale/rotate on the player sprite itself.
+function drawSpinEffect(
+  ctx: CanvasRenderingContext2D,
+  px: number,
+  py: number,
+  size: number,
+  gs: GameState,
+) {
+  const SPIN_DURATION = 1.2;
+  const alpha = (gs.spinTimer / SPIN_DURATION) * 0.85;
+  if (alpha <= 0) return;
+
+  // Arc centered at waist/hip height
+  const arcCy = py - size * 0.18;
+  // 270-degree sweep starting from current spin angle
+  const sweep = Math.PI * 1.5;
+  const startAngle = gs.spinAngle;
+
+  // Three concentric arcs: thick inner → thin outer (motion blur feel)
+  const arcs: Array<{ r: number; w: number; a: number }> = [
+    { r: size * 0.22, w: size * 0.07, a: alpha },
+    { r: size * 0.28, w: size * 0.05, a: alpha * 0.7 },
+    { r: size * 0.35, w: size * 0.03, a: alpha * 0.4 },
+  ];
+
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const arc of arcs) {
+    ctx.beginPath();
+    ctx.arc(px, arcCy, arc.r, startAngle, startAngle + sweep);
+    ctx.strokeStyle = `rgba(255,220,50,${arc.a})`;
+    ctx.lineWidth = arc.w;
+    ctx.stroke();
+  }
+
+  // Sparkle dots along the outer arc
+  const sparkCount = 5;
+  for (let i = 0; i < sparkCount; i++) {
+    const a = startAngle + (i / sparkCount) * sweep;
+    const sx = px + Math.cos(a) * size * 0.35;
+    const sy = arcCy + Math.sin(a) * size * 0.35;
+    ctx.beginPath();
+    ctx.arc(sx, sy, size * 0.025, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,240,100,${alpha * 0.8})`;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 // ── Player sprite drawing (drawn using canvas primitives) ────────────────────
 function drawPlayer(
   ctx: CanvasRenderingContext2D,
@@ -204,14 +255,12 @@ function drawPlayer(
   // Player height scales with depth (1 = full size at player row)
   const size = H * 0.14;
 
-  ctx.save();
-
-  // Spin rotation
+  // Draw spin arc BEHIND the player — no barrel roll on the sprite
   if (gs.spinning) {
-    ctx.translate(px, py);
-    ctx.rotate(gs.spinAngle);
-    ctx.translate(-px, -py);
+    drawSpinEffect(ctx, px, py, size, gs);
   }
+
+  ctx.save();
 
   // Ground shadow
   ctx.save();
@@ -319,12 +368,20 @@ function drawPlayerFallback(
   ctx.arc(px + size * 0.06, py - size * 0.55, size * 0.1, -0.3, 0.8);
   ctx.stroke();
 
-  // Legs — stride animation
-  const stride = Math.sin(t * 12) * size * 0.15;
+  // Arm flare: grows then fades over spin (peaks at mid-spin)
+  const spinFrac = gs.spinning ? gs.spinTimer / 1.2 : 0;
+  const armFlare = gs.spinning
+    ? 1.0 + Math.sin(spinFrac * Math.PI) * 0.55
+    : 1.0;
+  // Leg cross: slight lateral shift to sell the pivot
+  const legCross = gs.spinning ? Math.sin(gs.spinAngle) * size * 0.08 : 0;
+
+  // Legs — stride when running, lateral cross when spinning
+  const stride = gs.spinning ? 0 : Math.sin(t * 12) * size * 0.15;
   ctx.fillStyle = "#1a2a3a";
   ctx.beginPath();
   ctx.roundRect(
-    px - size * 0.12,
+    px - size * 0.12 + legCross,
     py - size * 0.2,
     size * 0.1,
     size * 0.3 + stride,
@@ -333,7 +390,7 @@ function drawPlayerFallback(
   ctx.fill();
   ctx.beginPath();
   ctx.roundRect(
-    px + size * 0.02,
+    px + size * 0.02 - legCross,
     py - size * 0.2,
     size * 0.1,
     size * 0.3 - stride,
@@ -341,32 +398,28 @@ function drawPlayerFallback(
   );
   ctx.fill();
 
-  // Arms
+  // Arms — spread wide during spin
+  const armSpread = size * 0.3 * armFlare;
+  const armSwing = gs.spinning ? 0 : Math.sin(t * 12 + 1) * size * 0.1;
   ctx.strokeStyle = jerseyColor;
   ctx.lineWidth = size * 0.07;
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(px - size * 0.18, py - size * 0.45);
-  ctx.lineTo(
-    px - size * 0.3,
-    py - size * 0.2 + Math.sin(t * 12 + 1) * size * 0.1,
-  );
+  ctx.lineTo(px - armSpread, py - size * 0.2 + armSwing);
   ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(px + size * 0.18, py - size * 0.45);
-  ctx.lineTo(
-    px + size * 0.3,
-    py - size * 0.2 - Math.sin(t * 12 + 1) * size * 0.1,
-  );
+  ctx.lineTo(px + armSpread, py - size * 0.2 - armSwing);
   ctx.stroke();
 
-  // Shoulder pads
+  // Shoulder pads — widen with arm flare during spin
   ctx.fillStyle = lighten(jerseyColor, 20);
   ctx.beginPath();
   ctx.ellipse(
-    px - size * 0.2,
+    px - size * 0.2 * armFlare,
     py - size * 0.5,
-    size * 0.1,
+    size * 0.1 * Math.min(armFlare, 1.3),
     size * 0.06,
     -0.3,
     0,
@@ -375,9 +428,9 @@ function drawPlayerFallback(
   ctx.fill();
   ctx.beginPath();
   ctx.ellipse(
-    px + size * 0.2,
+    px + size * 0.2 * armFlare,
     py - size * 0.5,
-    size * 0.1,
+    size * 0.1 * Math.min(armFlare, 1.3),
     size * 0.06,
     0.3,
     0,
