@@ -20,7 +20,7 @@ import {
   inputTurbo,
   updateMovement,
 } from "../modules/movement";
-import Renderer2D from "../modules/renderer";
+import Renderer2D, { type SpriteSet } from "../modules/renderer";
 import { tickSpawner } from "../modules/spawner";
 import { type GameState, STAGE_NAMES } from "../types/game";
 
@@ -360,6 +360,26 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     rendererRef.current = r;
     prevTsRef.current = 0;
     tackleFired.current = false;
+
+    // Load user GIF sprites
+    const loadImg = (src: string): HTMLImageElement => {
+      const img = new Image();
+      img.src = src;
+      return img;
+    };
+    const sprites: SpriteSet = {
+      run: loadImg(
+        "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-straight_forward_sprint_left_l_north-019d5fdc-fbd3-750c-a3ed-3ac454759bd6.gif",
+      ),
+      turbo: loadImg(
+        "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-sprinting_with_turbo_north_dir_north-019d5fdc-fbd0-721a-8d8a-d12d66e2ea3c.gif",
+      ),
+      spin: loadImg(
+        "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-start_out_sprinting_do_a_360_a_north-019d5fdc-fbd6-7380-b121-d45289383c21.gif",
+      ),
+    };
+    r.sprites = sprites;
+
     rafRef.current = requestAnimationFrame((ts) => loopRef.current(ts));
     return () => {
       cancelAnimationFrame(rafRef.current);

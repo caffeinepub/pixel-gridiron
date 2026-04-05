@@ -60,7 +60,7 @@ export interface Obstacle {
 }
 
 export interface FloatingText {
-  id: number; // stable ID for renderer keying
+  id: number;
   x: number;
   y: number;
   text: string;
@@ -83,10 +83,10 @@ export interface GameState {
   fieldZ: number;
   fieldScroll: number;
   speed: number;
-  lane: number;
-  targetLane: number;
-  fromLane: number;
-  laneT: number;
+  lane: number; // committed lane (integer, 0–4)
+  targetLane: number; // destination lane for current slide
+  fromLane: number; // ← origin lane for current slide — MUST stay in sync with lane
+  laneT: number; // 0=start of slide, 1=complete
   jumpY: number;
   jumpVY: number;
   jumping: boolean;
@@ -136,24 +136,21 @@ export interface GameState {
   touchdown: boolean;
 }
 
-// ── Canvas ──────────────────────────────────────────────────────────────────
+// ── Canvas dimensions ────────────────────────────────────────────────────────
 export const CW = 360;
 export const CH = 640;
-// Horizon pinned near the top of the canvas — sky is a thin sliver,
-// field occupies most of the screen for maximum depth perspective.
-export const HORIZON_Y = 16;
+export const HORIZON_Y = 16; // pixels from top — used by legacy HUD refs
 export const GROUND_Y = CH;
 export const PLAYER_Y = CH - 82;
 export const VANISH_X = CW / 2;
 
 export const LANE_BOT: readonly number[] = [28, 96, 180, 264, 332];
-// LANE_HOR must nearly match LANE_BOT spread since horizon is at y=16.
-// Spread is slightly narrower than bottom to still give visible converging lines.
 export const LANE_HOR: readonly number[] = [48, 108, 180, 252, 312];
 
-// ── World physics ───────────────────────────────────────────────────────────────
+// ── World physics ────────────────────────────────────────────────────────────
 export const SPAWN_Z = 12;
-export const COLLISION_Z = 0.5;
+// COLLISION_Z = 0: fire exactly when worldZ crosses 0 (tile at player's feet visually)
+export const COLLISION_Z = 0;
 export const BASE_SPEED = 4.5;
 export const MAX_SPEED = 8.5;
 export const SPEED_RAMP = 0.06;
@@ -163,336 +160,246 @@ export const GRAVITY_PX = 600;
 export const JUMP_VY = 220;
 export const BREAK_DUR = 0.33;
 
-// ── LEVEL-SEGMENTED FIELD MAPS ───────────────────────────────────────────────────
+// ── LEVEL-SEGMENTED FIELD MAPS ───────────────────────────────────────────────
 // Tile codes:
 //   0=open  1=DE  2=crate  3=powerup  4=LB  5=safety  6=DT  7=corner  8=endzone  9=start
-// Each map ends with 3 rows of "88888" (endzone trigger).
-// Formations are designed for the stage difficulty:
-//   HighSchool  — wide gaps, single defenders, lots of powerups
-//   College     — staggered DE/LB, crate alleys, moderate powerups
-//   Pro         — tight formations, DT walls, few powerups
-//   SuperBowl   — blitz packages, safeties + corners, rare powerups
-//   HallOfFame  — near-wall formations, force spin/hurdle, max difficulty
 
-// ——— HIGH SCHOOL: Simple spread, always one clean lane, generous powerups ———
+// ——— HIGH SCHOOL ———
 export const FIELD_MAP_HS: readonly string[] = [
-  "99999", // scrimmage
+  "99999",
   "00000",
-  // P1: single DE left
   "10000",
   "00000",
   "00000",
-  // P2: crate right two
   "00022",
   "00000",
-  // P3: powerup grab
   "33000",
   "00000",
-  // P4: DE flanks, open middle
   "10001",
   "00000",
   "00000",
-  // P5: single crate center
   "00200",
   "00000",
-  // P6: powerup row
   "30030",
   "00000",
-  // P7: DE left, crate right
   "10002",
   "00000",
   "00000",
-  // P8: two crates spread
   "02020",
   "00000",
-  // P9: bonus powerups
   "03003",
   "00000",
-  // P10: DE center only
   "00100",
   "00000",
   "00000",
-  // P11: crate wall with gap
   "22022",
   "00000",
-  // P12: full powerup shower
   "33333",
   "00000",
-  // P13: LB solo
   "00400",
   "00000",
   "00000",
-  // P14: open field bonus
   "00000",
   "03000",
   "00000",
-  // P15: DE + crate mixed
   "12001",
   "00000",
   "00000",
-  // ENDZONE
   "88888",
   "88888",
   "88888",
 ] as const;
 
-// ——— COLLEGE: Staggered DE/LB, crate alleys, moderate powerups ———
+// ——— COLLEGE ———
 export const FIELD_MAP_COL: readonly string[] = [
   "99999",
   "00000",
-  // P1: DE spread
   "10101",
   "00000",
   "00000",
-  // P2: crate alley left
   "22000",
   "00000",
-  // P3: LB + powerup
   "04030",
   "00000",
-  // P4: DE double rush flanks
   "10001",
   "00000",
   "00000",
-  // P5: crate + DE stagger
   "02100",
   "00010",
   "00000",
-  // P6: LB center + crates
   "24042",
   "00000",
-  // P7: powerup + DE
   "03001",
   "00000",
-  // P8: corner flanks
   "70007",
   "00000",
   "00000",
-  // P9: DE wall gap right
   "11110",
   "00000",
-  // P10: powerup shower
   "33033",
   "00000",
-  // P11: LB wall gap left
   "04440",
   "00000",
   "00000",
-  // P12: crate + LB
   "24200",
   "00000",
-  // P13: DE + corner combo
   "71017",
   "00000",
   "00000",
-  // P14: crate bonus
   "02220",
   "00000",
-  // P15: safety blitz
   "05050",
   "00000",
   "00000",
-  // P16: powerup lane
   "30303",
   "00000",
-  // ENDZONE
   "88888",
   "88888",
   "88888",
 ] as const;
 
-// ——— PRO: Tight formations, DT walls, crate fields, few powerups ———
+// ——— PRO ———
 export const FIELD_MAP_PRO: readonly string[] = [
   "99999",
   "00000",
-  // P1: DT center
   "06060",
   "00000",
   "00000",
-  // P2: DE flanks + DT
   "10601",
   "00000",
-  // P3: LB blitz
   "44044",
   "00000",
   "00000",
-  // P4: crate field
   "22022",
   "02020",
   "00000",
-  // P5: rare powerup
   "00300",
   "00000",
-  // P6: DT wall gap right
   "66060",
   "00000",
   "00000",
-  // P7: DE + LB combo
   "14041",
   "00000",
-  // P8: corner + safety net
   "75057",
   "00000",
   "00000",
-  // P9: crate alley + powerup
   "22322",
   "00000",
-  // P10: DT double
   "60006",
   "00000",
   "00000",
-  // P11: full DE rush
   "11011",
   "00000",
-  // P12: mixed crunch
   "24642",
   "00000",
   "00000",
-  // P13: safety net
   "55055",
   "00000",
-  // P14: powerup + DT
   "36063",
   "00000",
   "00000",
-  // P15: LB + crate wall
   "42024",
   "00000",
-  // ENDZONE
   "88888",
   "88888",
   "88888",
 ] as const;
 
-// ——— SUPER BOWL: Blitz packages, safety + corner combos, rare powerups ———
+// ——— SUPER BOWL ———
 export const FIELD_MAP_SB: readonly string[] = [
   "99999",
   "00000",
-  // P1: safety + DE blitz
   "15051",
   "00000",
   "00000",
-  // P2: corner + DT
   "76067",
   "00000",
-  // P3: LB wall center gap
   "44044",
   "00000",
   "00000",
-  // P4: crate + blitz
   "62026",
   "00000",
-  // P5: rare powerup + DE
   "10310",
   "00000",
-  // P6: DT + safety wall
   "65056",
   "00000",
   "00000",
-  // P7: corner blitz wide
   "70707",
   "00000",
-  // P8: LB + DE combined
   "14141",
   "00000",
   "00000",
-  // P9: crate field dense
   "22222",
   "02020",
   "00000",
-  // P10: single powerup rare
   "00030",
   "00000",
-  // P11: safety net wide
   "55555",
   "00000",
   "00000",
-  // P12: DT walls + DE rush
   "61016",
   "00000",
-  // P13: corner + safety net
   "75757",
   "00000",
   "00000",
-  // P14: DT blitz
   "66666",
   "00000",
-  // P15: powerup just before endzone
   "03030",
   "00000",
-  // ENDZONE
   "88888",
   "88888",
   "88888",
 ] as const;
 
-// ——— HALL OF FAME: Near-wall formations, forced spin/hurdle, hardest ———
+// ——— HALL OF FAME ———
 export const FIELD_MAP_HOF: readonly string[] = [
   "99999",
   "00000",
-  // P1: DT + DE full blitz
   "16161",
   "00000",
   "00000",
-  // P2: LB wall no gap (must spin)
   "44444",
   "00000",
-  // P3: crate wall (must hurdle)
   "22222",
   "00000",
-  // P4: safety corner double
   "75057",
   "05050",
   "00000",
-  // P5: rare star powerup
   "00300",
   "00000",
-  // P6: DT wall gap left
   "06660",
   "00000",
   "00000",
-  // P7: DE + LB + corner
   "17471",
   "00000",
-  // P8: crate + DT
   "26062",
   "00000",
   "00000",
-  // P9: all safeties
   "55555",
   "00000",
-  // P10: powerup then DT
   "03003",
   "66066",
   "00000",
-  // P11: corner net
   "77777",
   "00000",
-  // P12: DE + crate + LB
   "12421",
   "00000",
   "00000",
-  // P13: mixed wall no gap
   "46164",
   "00000",
-  // P14: DT + safety final push
   "65056",
   "16061",
   "00000",
-  // P15: last powerup
   "33333",
   "00000",
-  // ENDZONE
   "88888",
   "88888",
   "88888",
 ] as const;
 
-// Default field map (High School) — used by spawner when stage isn't resolved
 export const FIELD_MAP: readonly string[] = FIELD_MAP_HS;
 export const MAP_ROWS = FIELD_MAP_HS.length;
 
-// Stage → field map selector
 export function getFieldMap(stage: CareerStage): readonly string[] {
   switch (stage) {
     case "HighSchool":
@@ -657,7 +564,7 @@ export function createGameState(p: PlayerProfile): GameState {
     speed: BASE_SPEED + p.skills.speed * 0.3,
     lane: 2,
     targetLane: 2,
-    fromLane: 2,
+    fromLane: 2, // starts in middle
     laneT: 1,
     jumpY: 0,
     jumpVY: 0,

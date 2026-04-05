@@ -1,5 +1,6 @@
 /**
- * renderer.ts v24 — Pure 2D Canvas renderer. No Three.js.
+ * renderer.ts v30 — Pure 2D Canvas renderer. No Three.js.
+ * v30: Uses user GIF sprites when loaded; fromLane-based player position.
  * Scrolling perspective floor, sprite player, emoji obstacles, HUD floats.
  * Simple, fast, correct.
  */
@@ -238,24 +239,24 @@ function drawSpinEffect(
   ctx.restore();
 }
 
-// ── Player sprite drawing — pure canvas, no image dependency ────────────────
+// ── Player sprite drawing ────────────────────────────────────────────────────
+// Uses GIF image when provided; falls back to canvas primitives.
 function drawPlayer(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
   gs: GameState,
-  _spriteImg: HTMLImageElement | null,
+  spriteImg: HTMLImageElement | null,
 ) {
-  const _hz = H * HORIZON_Y;
   const playerDepth = 1.0;
-  const lane = gs.lane + (gs.targetLane - gs.lane) * gs.laneT;
+  const lane = gs.fromLane + (gs.targetLane - gs.fromLane) * gs.laneT;
   const px = W * laneFracAtDepth(lane, playerDepth);
   const py = H * PLAYER_Y_FRAC - gs.jumpY * 0.18;
 
-  // Player height scales with depth (1 = full size at player row)
+  // Player height scales with depth
   const size = H * 0.14;
 
-  // Draw spin arc BEHIND the player — no barrel roll on the sprite
+  // Spin arc draws behind the player
   if (gs.spinning) {
     drawSpinEffect(ctx, px, py, size, gs);
   }
@@ -279,8 +280,21 @@ function drawPlayer(
   ctx.fill();
   ctx.restore();
 
-  // Always use canvas-drawn sprite — reliable, transparent, correct size
-  drawPlayerFallback(ctx, px, py, size, gs);
+  if (spriteImg?.complete && spriteImg.naturalWidth > 0) {
+    // Draw user GIF: scale to fit height=size*2, centered on px/py
+    const spriteH = size * 2.0;
+    const aspect = spriteImg.naturalWidth / spriteImg.naturalHeight;
+    const spriteW = spriteH * aspect;
+    ctx.drawImage(
+      spriteImg,
+      px - spriteW * 0.5,
+      py - spriteH * 0.8,
+      spriteW,
+      spriteH,
+    );
+  } else {
+    drawPlayerFallback(ctx, px, py, size, gs);
+  }
 
   ctx.restore();
 }
@@ -693,11 +707,18 @@ function lighten(hex: string, pct: number): string {
 }
 
 // ── Main renderer class ────────────────────────────────────────────────────────
+export interface SpriteSet {
+  run: HTMLImageElement | null;
+  turbo: HTMLImageElement | null;
+  spin: HTMLImageElement | null;
+}
+
 export default class Renderer2D {
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private W = 0;
   private H = 0;
+  sprites: SpriteSet = { run: null, turbo: null, spin: null };
 
   init(container: HTMLDivElement, w: number, h: number) {
     const canvas = document.createElement("canvas");
@@ -742,7 +763,12 @@ export default class Renderer2D {
     }
 
     // Player (always on top of obstacles)
-    drawPlayer(ctx, W, H, gs, null);
+    const activeSprite = gs.spinning
+      ? (this.sprites.spin ?? this.sprites.run)
+      : gs.turboActive
+        ? (this.sprites.turbo ?? this.sprites.run)
+        : this.sprites.run;
+    drawPlayer(ctx, W, H, gs, activeSprite ?? null);
 
     // HUD overlays
     drawFloats(ctx, W, H, gs);
