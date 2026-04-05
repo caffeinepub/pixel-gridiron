@@ -1,7 +1,8 @@
 /**
- * GameCanvas.tsx v24 — 2D Canvas game view.
- * Uses pure Canvas2D renderer (no Three.js).
- * RAF loop is stable — stored in a ref, never recreated on re-render.
+ * GameCanvas.tsx v31 — 2D Canvas game view.
+ * v31: Player GIF sprites rendered as real DOM <img> elements (positioned absolutely
+ *      over the canvas) so the browser animates them natively every frame.
+ *      Canvas handles field, obstacles, HUD, shadow, and spin arc only.
  */
 import type React from "react";
 import {
@@ -20,7 +21,7 @@ import {
   inputTurbo,
   updateMovement,
 } from "../modules/movement";
-import Renderer2D, { type SpriteSet } from "../modules/renderer";
+import Renderer2D from "../modules/renderer";
 import { tickSpawner } from "../modules/spawner";
 import { type GameState, STAGE_NAMES } from "../types/game";
 
@@ -38,6 +39,14 @@ interface Props {
   onScoreUpdate: (score: number, hp: number, xp: number) => void;
   onTackled: (yards: number, xp: number, items: string[]) => void;
 }
+
+// GIF asset paths (served from /public/assets/)
+const GIF_RUN =
+  "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-straight_forward_sprint_left_l_north-019d5fdc-fbd3-750c-a3ed-3ac454759bd6.gif";
+const GIF_TURBO =
+  "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-sprinting_with_turbo_north_dir_north-019d5fdc-fbd0-721a-8d8a-d12d66e2ea3c.gif";
+const GIF_SPIN =
+  "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-start_out_sprinting_do_a_360_a_north-019d5fdc-fbd6-7380-b121-d45289383c21.gif";
 
 // ── Phase overlay screens ─────────────────────────────────────────────────────────────────
 function PhaseOverlay({
@@ -297,6 +306,13 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
   const [phaseTick, setPhaseTick] = useState(0);
   const phaseTickRef = useRef(0);
 
+  // DOM refs for the animated GIF sprite elements
+  const imgRunRef = useRef<HTMLImageElement>(null);
+  const imgTurboRef = useRef<HTMLImageElement>(null);
+  const imgSpinRef = useRef<HTMLImageElement>(null);
+  // Track whether each GIF has loaded
+  const gifLoadedRef = useRef({ run: false, turbo: false, spin: false });
+
   const bumpPhaseTick = () => {
     phaseTickRef.current += 1;
     setPhaseTick(phaseTickRef.current);
@@ -346,6 +362,71 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     }
 
     rendererRef.current?.update(gs, dt);
+
+    // ── Sync GIF img overlay position to canvas player pos ──────────────────
+    const renderer = rendererRef.current;
+    if (renderer && mountRef.current) {
+      const pos = renderer.lastPlayerPos;
+      const containerW = mountRef.current.offsetWidth;
+      const containerH = mountRef.current.offsetHeight;
+      const canvasW = renderer.W;
+      const canvasH = renderer.H;
+
+      // Scale from canvas pixels to container CSS pixels
+      const scaleX = canvasW > 0 ? containerW / canvasW : 1;
+      const scaleY = canvasH > 0 ? containerH / canvasH : 1;
+
+      const cssX = pos.x * scaleX;
+      const cssY = pos.y * scaleY;
+      const cssSize = pos.size * scaleY;
+
+      // GIF display size: 2x the player size slot, centered on cssX/cssY
+      const gifH = cssSize * 2.2;
+      const gifW = gifH; // treat as square; browser preserves aspect ratio
+
+      const left = cssX - gifW * 0.5;
+      const top = cssY - gifH * 0.82;
+
+      // Decide which GIF is active
+      const showSpin = gs.spinning && gifLoadedRef.current.spin;
+      const showTurbo =
+        gs.turboActive && !gs.spinning && gifLoadedRef.current.turbo;
+      const showRun = !showSpin && !showTurbo && gifLoadedRef.current.run;
+
+      // Hide all first, then show the active one
+      const baseStyle = {
+        position: "absolute" as const,
+        width: `${gifW}px`,
+        height: `${gifH}px`,
+        left: `${left}px`,
+        top: `${top}px`,
+        imageRendering: "pixelated" as const,
+        pointerEvents: "none" as const,
+        objectFit: "contain" as const,
+      };
+
+      // Only show during playing phase
+      const visible = gs.phase === "playing";
+
+      if (imgRunRef.current) {
+        Object.assign(imgRunRef.current.style, {
+          ...baseStyle,
+          display: visible && showRun ? "block" : "none",
+        });
+      }
+      if (imgTurboRef.current) {
+        Object.assign(imgTurboRef.current.style, {
+          ...baseStyle,
+          display: visible && showTurbo ? "block" : "none",
+        });
+      }
+      if (imgSpinRef.current) {
+        Object.assign(imgSpinRef.current.style, {
+          ...baseStyle,
+          display: visible && showSpin ? "block" : "none",
+        });
+      }
+    }
   };
 
   // Mount renderer — runs ONCE
@@ -357,29 +438,11 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     const h = Math.max(400, rect.height || 600);
     const r = new Renderer2D();
     r.init(mount, w, h);
+    // GIF sprites are DOM img elements — disable canvas fallback
+    r.useCanvasFallback = false;
     rendererRef.current = r;
     prevTsRef.current = 0;
     tackleFired.current = false;
-
-    // Load user GIF sprites
-    const loadImg = (src: string): HTMLImageElement => {
-      const img = new Image();
-      img.src = src;
-      return img;
-    };
-    const sprites: SpriteSet = {
-      run: loadImg(
-        "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-straight_forward_sprint_left_l_north-019d5fdc-fbd3-750c-a3ed-3ac454759bd6.gif",
-      ),
-      turbo: loadImg(
-        "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-sprinting_with_turbo_north_dir_north-019d5fdc-fbd0-721a-8d8a-d12d66e2ea3c.gif",
-      ),
-      spin: loadImg(
-        "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-start_out_sprinting_do_a_360_a_north-019d5fdc-fbd6-7380-b121-d45289383c21.gif",
-      ),
-    };
-    r.sprites = sprites;
-
     rafRef.current = requestAnimationFrame((ts) => loopRef.current(ts));
     return () => {
       cancelAnimationFrame(rafRef.current);
@@ -400,6 +463,15 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     obs.observe(mount);
     return () => obs.disconnect();
   }, []);
+
+  // GIF load handlers — when loaded, disable canvas fallback entirely
+  const handleGifLoad = (key: "run" | "turbo" | "spin") => {
+    gifLoadedRef.current[key] = true;
+    // At least run GIF loaded — fully disable canvas fallback
+    if (rendererRef.current) {
+      rendererRef.current.useCanvasFallback = false;
+    }
+  };
 
   // Input
   useImperativeHandle(
@@ -463,10 +535,43 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
         background: "#02020f",
       }}
     >
+      {/* Canvas mount — renderer writes here */}
       <div
         ref={mountRef}
         style={{ width: "100%", height: "100%", display: "block" }}
       />
+
+      {/*
+        Animated GIF overlay sprites.
+        These are real <img> elements so the browser plays them as full GIFs.
+        Positioned absolutely and synced to canvas player coords every RAF frame.
+        Initial display:none — the loop reveals the correct one each frame.
+      */}
+      <img
+        ref={imgRunRef}
+        src={GIF_RUN}
+        alt=""
+        aria-hidden="true"
+        onLoad={() => handleGifLoad("run")}
+        style={{ display: "none", position: "absolute", pointerEvents: "none" }}
+      />
+      <img
+        ref={imgTurboRef}
+        src={GIF_TURBO}
+        alt=""
+        aria-hidden="true"
+        onLoad={() => handleGifLoad("turbo")}
+        style={{ display: "none", position: "absolute", pointerEvents: "none" }}
+      />
+      <img
+        ref={imgSpinRef}
+        src={GIF_SPIN}
+        alt=""
+        aria-hidden="true"
+        onLoad={() => handleGifLoad("spin")}
+        style={{ display: "none", position: "absolute", pointerEvents: "none" }}
+      />
+
       <PhaseOverlay
         gs={gs}
         onStart={handleStart}
