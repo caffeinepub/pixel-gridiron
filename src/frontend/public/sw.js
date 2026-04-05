@@ -1,6 +1,6 @@
 // Pixel Gridiron Service Worker v31
 // Versioned cache: wipes all old caches on first load.
-const CACHE_VERSION = 'pixel-gridiron-v31';
+const CACHE_VERSION = 'pixel-gridiron-v32';
 const CACHE_NAME = CACHE_VERSION;
 
 const PRECACHE_ASSETS = [

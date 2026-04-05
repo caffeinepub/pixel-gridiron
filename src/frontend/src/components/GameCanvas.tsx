@@ -385,7 +385,7 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
       const gifW = gifH; // treat as square; browser preserves aspect ratio
 
       const left = cssX - gifW * 0.5;
-      const top = cssY - gifH * 0.82;
+      const top = cssY - gifH * 0.92; // feet near bottom of GIF image
 
       // Decide which GIF is active
       const showSpin = gs.spinning && gifLoadedRef.current.spin;

@@ -1,5 +1,5 @@
 /**
- * renderer.ts v31 — Pure 2D Canvas renderer. No Three.js.
+ * renderer.ts v32 — Pure 2D Canvas renderer. No Three.js.
  * v31: GIF sprites are DOM <img> elements positioned by the GameCanvas layer;
  *      the canvas handles field, obstacles, HUD, and fallback player only.
  *      Exports lastPlayerPos so GameCanvas can sync the sprite img position.
@@ -9,7 +9,7 @@ import type { GameState } from "../types/game";
 
 // ── Layout constants ─────────────────────────────────────────────────────────
 const HORIZON_Y = 0.04; // horizon very near top (4% down)
-const PLAYER_Y_FRAC = 0.82; // player sits at 82% down
+const PLAYER_Y_FRAC = 0.9; // player sits at 90% down (near bottom of canvas, above controls)
 // vanishing point at horizontal center: 0.5 (used implicitly in lane fracs)
 
 // Lane X positions at the bottom edge (0..1 of canvas width)
