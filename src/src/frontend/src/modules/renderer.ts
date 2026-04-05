@@ -720,26 +720,34 @@ function drawPlayer(ctx: CanvasRenderingContext2D, gs: GameState) {
     }
   }
   if (gs.spinning) {
-    const sx = Math.cos(gs.spinAngle);
-    ctx.save();
-    for (let g = 1; g <= 3; g++) {
+    // Draw motion-blur ghost trails at fixed offsets — sprite stays upright, north-facing
+    const dir = gs.spinAngle < Math.PI ? 1 : -1;
+    for (let g = 3; g >= 1; g--) {
       ctx.save();
-      ctx.globalAlpha = 0.1 * (4 - g);
-      ctx.strokeStyle = "rgba(255,220,50,0.9)";
-      ctx.lineWidth = 2 * S;
-      ctx.translate(px + g * 10 * Math.sign(sx) * S, py - 18 * S);
-      ctx.scale(Math.abs(sx) * 0.5, 1);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 18 * S, 24 * S, 0, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.globalAlpha = 0.12 * (4 - g);
+      drawSprite(ctx, gs, px + dir * g * 14 * S, py, S, true);
       ctx.restore();
     }
-    ctx.restore();
+    // Spin arc sweep (horizontal gold arc at waist height)
     ctx.save();
-    ctx.translate(px, py);
-    ctx.scale(sx, 1);
-    drawSprite(ctx, gs, 0, 0, S, false);
+    const arcProg = (gs.spinAngle % (Math.PI * 2)) / (Math.PI * 2);
+    const arcStart = -Math.PI * 0.6;
+    const arcEnd = arcStart + Math.PI * 1.2 * arcProg;
+    ctx.strokeStyle = "rgba(255,220,50,0.85)";
+    ctx.lineWidth = 3 * S;
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.ellipse(px, py - 18 * S, 22 * S, 7 * S, 0, arcStart, arcEnd);
+    ctx.stroke();
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 1.5 * S;
+    ctx.beginPath();
+    ctx.ellipse(px, py - 18 * S, 22 * S, 7 * S, 0, arcStart, arcEnd - 0.3);
+    ctx.stroke();
     ctx.restore();
+    // Draw the sprite normally — upright, north-facing, no rotation
+    drawSprite(ctx, gs, px, py, S, false);
   } else {
     drawSprite(ctx, gs, px, py, S, false);
   }

@@ -14,7 +14,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { useInternetIdentity } from "@/hooks/useInternetIdentity";
 import { useQueryClient } from "@tanstack/react-query";
 import type React from "react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { GameCanvasHandle } from "./components/GameCanvas";
 import GameCanvas from "./components/GameCanvas";
@@ -33,6 +33,12 @@ import {
   levelFromXp,
   xpForNextLevel,
 } from "./types/game";
+
+// Extend Window for PWA install prompt
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => void;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
 
 type Screen =
   | "game"
@@ -63,6 +69,27 @@ export default function App() {
   // Separate tick state so we can force a re-render when game state changes
   const [gameTick, setGameTick] = useState(0);
   const forceUpdate = useCallback(() => setGameTick((t) => t + 1), []);
+
+  // PWA install prompt
+  const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+      setShowInstallBanner(true);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+  const handleInstall = () => {
+    if (!installPrompt) return;
+    (installPrompt as BeforeInstallPromptEvent).prompt();
+    (installPrompt as BeforeInstallPromptEvent).userChoice.then(() => {
+      setInstallPrompt(null);
+      setShowInstallBanner(false);
+    });
+  };
 
   const { data: backendProfile, isLoading: profileLoading } =
     usePlayerProfile();
@@ -752,6 +779,30 @@ export default function App() {
           >
             ▶ BACK TO GAME
           </button>
+
+          {/* Install to Home Screen */}
+          {showInstallBanner && (
+            <button
+              type="button"
+              data-ocid="menu.install.button"
+              onClick={handleInstall}
+              style={{
+                width: 240,
+                padding: "14px 0",
+                background: "rgba(255,215,0,0.12)",
+                border: "1px solid rgba(255,215,0,0.5)",
+                borderRadius: 10,
+                color: "#FFD700",
+                fontFamily: "monospace",
+                fontWeight: 800,
+                fontSize: 13,
+                letterSpacing: "0.1em",
+                cursor: "pointer",
+              }}
+            >
+              📲 INSTALL APP
+            </button>
+          )}
         </div>
       )}
 
