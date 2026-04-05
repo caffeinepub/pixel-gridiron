@@ -1,6 +1,6 @@
-// Pixel Gridiron Service Worker v27
+// Pixel Gridiron Service Worker v29
 // Versioned cache: wipes all old caches on first load.
-const CACHE_VERSION = 'pixel-gridiron-v27';
+const CACHE_VERSION = 'pixel-gridiron-v29';
 const CACHE_NAME = CACHE_VERSION;
 
 const PRECACHE_ASSETS = [
@@ -10,32 +10,32 @@ const PRECACHE_ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
-  console.log('[SW v27] Installing...');
+  console.log('[SW v29] Installing...');
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => {
         return Promise.allSettled(
           PRECACHE_ASSETS.map((url) =>
             cache.add(url).catch((err) => {
-              console.warn('[SW v27] Precache miss:', url, err.message);
+              console.warn('[SW v29] Precache miss:', url, err.message);
             })
           )
         );
       })
       .then(() => self.skipWaiting())
-      .catch((err) => console.error('[SW v27] Install failed:', err))
+      .catch((err) => console.error('[SW v29] Install failed:', err))
   );
 });
 
 self.addEventListener('activate', (event) => {
-  console.log('[SW v27] Activating, wiping old caches...');
+  console.log('[SW v29] Activating, wiping old caches...');
   event.waitUntil(
     caches.keys()
       .then((names) => Promise.all(
         names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))
       ))
       .then(() => self.clients.claim())
-      .catch((err) => console.error('[SW v27] Activate failed:', err))
+      .catch((err) => console.error('[SW v29] Activate failed:', err))
   );
 });
 

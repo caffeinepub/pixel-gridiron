@@ -85,6 +85,7 @@ export interface GameState {
   speed: number;
   lane: number;
   targetLane: number;
+  fromLane: number;
   laneT: number;
   jumpY: number;
   jumpVY: number;
@@ -138,13 +139,17 @@ export interface GameState {
 // ── Canvas ──────────────────────────────────────────────────────────────────
 export const CW = 360;
 export const CH = 640;
-export const HORIZON_Y = 152;
+// Horizon pinned near the top of the canvas — sky is a thin sliver,
+// field occupies most of the screen for maximum depth perspective.
+export const HORIZON_Y = 16;
 export const GROUND_Y = CH;
 export const PLAYER_Y = CH - 82;
 export const VANISH_X = CW / 2;
 
 export const LANE_BOT: readonly number[] = [28, 96, 180, 264, 332];
-export const LANE_HOR: readonly number[] = [60, 110, 180, 250, 300];
+// LANE_HOR must nearly match LANE_BOT spread since horizon is at y=16.
+// Spread is slightly narrower than bottom to still give visible converging lines.
+export const LANE_HOR: readonly number[] = [48, 108, 180, 252, 312];
 
 // ── World physics ───────────────────────────────────────────────────────────────
 export const SPAWN_Z = 12;
@@ -652,6 +657,7 @@ export function createGameState(p: PlayerProfile): GameState {
     speed: BASE_SPEED + p.skills.speed * 0.3,
     lane: 2,
     targetLane: 2,
+    fromLane: 2,
     laneT: 1,
     jumpY: 0,
     jumpVY: 0,

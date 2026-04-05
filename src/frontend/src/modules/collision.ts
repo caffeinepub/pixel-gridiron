@@ -1,9 +1,13 @@
 /**
- * collision.ts v23 — checks every obstacle against the player each frame.
- * FIXED: removed unused canvas-pixel laneX() call for float positions.
- * FIXED v23: lane check now uses interpolated player position (no ghost tackles mid-slide).
- * FIXED v23: COLLISION_Z tightened to 0.5 (visual impact point, not 1.6 early-fire).
- *        Renderer positions floats at cameraPivotX (world space) anyway.
+ * collision.ts v29 — tile-based collision with correct interpolated lane tracking.
+ *
+ * HOW IT WORKS:
+ *   - Each obstacle's worldZ starts at SPAWN_Z and counts DOWN as the player advances.
+ *   - worldZ === 0 means the tile is exactly at the player's ground position.
+ *   - Collision fires when worldZ is within COLLISION_Z of 0.
+ *   - Lane check uses the ACTUAL interpolated lane position (fromLane → targetLane * laneT),
+ *     not gs.lane (which is only set when the shift completes). This prevents ghost tackles
+ *     and missed collisions during mid-shift frames.
  */
 import {
   BREAK_DUR,
@@ -21,9 +25,13 @@ const DEFENDER_DAMAGE: Record<string, number> = {
   s: 12,
 };
 
-// Interpolated lane position (0-4 float) — used for accurate hit detection
+/**
+ * Returns the player's actual fractional lane position (0–4).
+ * Uses fromLane + (targetLane - fromLane) * laneT — the same formula
+ * the renderer uses for playerScreenX — so collision matches what you see.
+ */
 function playerLaneF(gs: GameState): number {
-  return gs.lane + (gs.targetLane - gs.lane) * gs.laneT;
+  return gs.fromLane + (gs.targetLane - gs.fromLane) * gs.laneT;
 }
 
 export function detectCollisions(gs: GameState): void {
@@ -34,10 +42,13 @@ export function detectCollisions(gs: GameState): void {
 
   for (const obs of gs.obstacles) {
     if (obs.broken) continue;
+    // Tile hasn't reached the player yet
     if (obs.worldZ > COLLISION_Z) continue;
+    // Tile has already passed the player
     if (obs.worldZ < -1.5) continue;
-    // Use 0.55 lane-radius for hit detection — must be visually inside the lane
-    if (Math.abs(obs.lane - playerLF) > 0.55) continue;
+    // Lane check: player center must be within 0.5 lane-widths of the tile center.
+    // 0.5 radius means the player must be visually overlapping the tile's lane.
+    if (Math.abs(obs.lane - playerLF) > 0.5) continue;
 
     // Jump clears crates
     if (gs.jumping && gs.jumpY > 14 && obs.type === "crate") continue;
@@ -128,7 +139,7 @@ export function detectCollisions(gs: GameState): void {
       continue;
     }
 
-    // Power skill: each 4 ranks adds one bulldoze tier (not a flat >= 8 gate)
+    // Power skill: each 4 ranks adds one bulldoze tier
     const powerTier = Math.floor((gs.skills.power ?? 0) / 4);
     if (powerTier >= 3 || (powerTier >= 2 && defType === "de")) {
       gainXp(gs, xpReward, "BULLDOZED!", "#FFD700");
