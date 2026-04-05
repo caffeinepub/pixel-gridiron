@@ -1,8 +1,7 @@
 /**
- * GameCanvas.tsx v22 — Three.js 3D game view.
- * FIXED: RAF loop is stable — stored in a ref, never recreated on forceUpdate.
- * FIXED: tackleFired guard is airtight; handleNextPlay resets cleanly.
- * FIXED: XP/skills/level copied back to parent profile via onTackled every play.
+ * GameCanvas.tsx v24 — 2D Canvas game view.
+ * Uses pure Canvas2D renderer (no Three.js).
+ * RAF loop is stable — stored in a ref, never recreated on re-render.
  */
 import type React from "react";
 import {
@@ -21,9 +20,9 @@ import {
   inputTurbo,
   updateMovement,
 } from "../modules/movement";
-import ThreeRenderer from "../modules/renderer";
+import Renderer2D from "../modules/renderer";
 import { tickSpawner } from "../modules/spawner";
-import { CH, CW, type GameState, STAGE_NAMES } from "../types/game";
+import { type GameState, STAGE_NAMES } from "../types/game";
 
 export interface GameCanvasHandle {
   pressLeft: () => void;
@@ -40,7 +39,7 @@ interface Props {
   onTackled: (yards: number, xp: number, items: string[]) => void;
 }
 
-// ── Phase overlay screens ─────────────────────────────────────────────────────
+// ── Phase overlay screens ─────────────────────────────────────────────────────────────────
 function PhaseOverlay({
   gs,
   onStart,
@@ -52,7 +51,6 @@ function PhaseOverlay({
   onNextPlay: () => void;
   tick: number;
 }) {
-  // tick is only here to force re-render when phase changes
   void tick;
 
   const overlay: React.CSSProperties = {
@@ -137,7 +135,7 @@ function PhaseOverlay({
             lineHeight: 1.6,
           }}
         >
-          TAP ◀ ▶ to change lanes · SPIN breaks defenders{"\n"}
+          TAP ◄ ► to change lanes · SPIN breaks defenders{"\n"}
           HURDLE jumps crates · TURBO for speed boost
         </div>
         {gs.teamName ? (
@@ -286,18 +284,16 @@ function PhaseOverlay({
   return null;
 }
 
-// ── Main GameCanvas component ─────────────────────────────────────────────────
+// ── Main GameCanvas ───────────────────────────────────────────────────────────────────
 const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
   { gameStateRef, onScoreUpdate, onTackled },
   ref,
 ) {
   const mountRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<ThreeRenderer | null>(null);
+  const rendererRef = useRef<Renderer2D | null>(null);
   const rafRef = useRef(0);
   const prevTsRef = useRef(0);
-  // tackleFired stays true until NEXT PLAY is tapped — prevents duplicate callbacks
   const tackleFired = useRef(false);
-  // phaseTick drives overlay re-renders WITHOUT recreating the game loop
   const [phaseTick, setPhaseTick] = useState(0);
   const phaseTickRef = useRef(0);
 
@@ -306,9 +302,7 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     setPhaseTick(phaseTickRef.current);
   };
 
-  // ── Stable RAF callback stored in a ref — never recreated ──────────────────
-  // This is the key fix: the loop ref doesn't change between renders, so the
-  // useEffect that starts the RAF only fires once on mount.
+  // Stable RAF loop ref — never recreated
   const loopRef = useRef<(ts: number) => void>(() => {});
 
   loopRef.current = (ts: number) => {
@@ -322,7 +316,6 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     prevTsRef.current = ts;
 
     const gs = gameStateRef.current;
-    // Use wall-clock time for animations — frame-rate independent
     gs.elapsedTime = (gs.elapsedTime ?? 0) + dt;
     gs.frame += 1;
 
@@ -347,9 +340,7 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
       gs.tackleTimer -= dt;
       if (!tackleFired.current) {
         tackleFired.current = true;
-        // Fire callback — parent copies XP/skills back to profile
         onTackled(Math.floor(gs.playYards), gs.playXp, gs.playItems);
-        // Trigger overlay render (safe — loop is not recreated)
         bumpPhaseTick();
       }
     }
@@ -357,26 +348,28 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     rendererRef.current?.update(gs, dt);
   };
 
-  // Mount Three.js renderer — runs ONCE on mount, never re-runs
+  // Mount renderer — runs ONCE
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
-    const tr = new ThreeRenderer();
-    tr.init(mount, CW, CH);
-    rendererRef.current = tr;
+    const rect = mount.getBoundingClientRect();
+    const w = Math.max(360, rect.width || 360);
+    const h = Math.max(400, rect.height || 600);
+    const r = new Renderer2D();
+    r.init(mount, w, h);
+    rendererRef.current = r;
     prevTsRef.current = 0;
     tackleFired.current = false;
-    // Start the RAF with the stable ref wrapper
     rafRef.current = requestAnimationFrame((ts) => loopRef.current(ts));
     return () => {
       cancelAnimationFrame(rafRef.current);
-      tr.dispose();
+      r.dispose();
       rendererRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Resize handler
+  // Resize
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -388,7 +381,7 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     return () => obs.disconnect();
   }, []);
 
-  // Input handlers — no closures over loop, safe
+  // Input
   useImperativeHandle(
     ref,
     () => ({
