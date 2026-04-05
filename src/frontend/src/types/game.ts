@@ -148,11 +148,11 @@ export const LANE_HOR: readonly number[] = [60, 110, 180, 250, 300];
 
 // ── World physics ───────────────────────────────────────────────────────────────
 export const SPAWN_Z = 12;
-export const COLLISION_Z = 1.6;
+export const COLLISION_Z = 0.5;
 export const BASE_SPEED = 4.5;
 export const MAX_SPEED = 8.5;
 export const SPEED_RAMP = 0.06;
-export const ROW_SPACING = 6;
+export const ROW_SPACING = 8;
 export const FIRST_ROW_Z = 4;
 export const GRAVITY_PX = 600;
 export const JUMP_VY = 220;

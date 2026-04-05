@@ -1,6 +1,8 @@
 /**
- * collision.ts v22 — checks every obstacle against the player each frame.
+ * collision.ts v23 — checks every obstacle against the player each frame.
  * FIXED: removed unused canvas-pixel laneX() call for float positions.
+ * FIXED v23: lane check now uses interpolated player position (no ghost tackles mid-slide).
+ * FIXED v23: COLLISION_Z tightened to 0.5 (visual impact point, not 1.6 early-fire).
  *        Renderer positions floats at cameraPivotX (world space) anyway.
  */
 import {
@@ -19,14 +21,23 @@ const DEFENDER_DAMAGE: Record<string, number> = {
   s: 12,
 };
 
+// Interpolated lane position (0-4 float) — used for accurate hit detection
+function playerLaneF(gs: GameState): number {
+  return gs.lane + (gs.targetLane - gs.lane) * gs.laneT;
+}
+
 export function detectCollisions(gs: GameState): void {
   if (gs.touchdown) return;
+
+  // Player's actual interpolated lane position (fractional)
+  const playerLF = playerLaneF(gs);
 
   for (const obs of gs.obstacles) {
     if (obs.broken) continue;
     if (obs.worldZ > COLLISION_Z) continue;
     if (obs.worldZ < -1.5) continue;
-    if (obs.lane !== gs.lane) continue;
+    // Use 0.55 lane-radius for hit detection — must be visually inside the lane
+    if (Math.abs(obs.lane - playerLF) > 0.55) continue;
 
     // Jump clears crates
     if (gs.jumping && gs.jumpY > 14 && obs.type === "crate") continue;

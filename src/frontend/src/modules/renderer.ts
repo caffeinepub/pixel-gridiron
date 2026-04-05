@@ -1,8 +1,9 @@
 /**
- * renderer.ts — Three.js 3D scene manager v21.
+ * renderer.ts — Three.js 3D scene manager v23.
  * ISOMETRIC 2D TILE FLOOR: 5 tiles wide, 64-unit tiles in isometric projection.
- * CHARACTER SPRITES: billboard canvas-texture aura wrapping 3D humanoid meshes.
+ * CHARACTER SPRITES: billboard spritesheet player + aura overlay.
  * DEFENDER SPRITES: type-specific silhouette, color, and shape per position.
+ * WIDE VANISHING POINT: low rear-view camera, FOV 70, wide lane world X.
  */
 import * as THREE from "three";
 import {
@@ -15,16 +16,16 @@ import {
   STAGE_NAMES,
 } from "../types/game";
 
-// ── Lane mapping: game lanes 0-4 → world X positions ────────────────────────
-const LANE_WORLD_X = [-4, -2, 0, 2, 4] as const;
+// ── Lane mapping: game lanes 0-4 → world X positions (WIDER) ────────────────
+const LANE_WORLD_X = [-6, -3, 0, 3, 6] as const;
 
 function laneWorldX(lane: number): number {
   return LANE_WORLD_X[lane] ?? 0;
 }
 
-// Map worldZ (0=player, SPAWN_Z=far) to Three.js Z
+// Map worldZ (0=player, SPAWN_Z=far) to Three.js Z — wider spread
 function worldZToSceneZ(worldZ: number): number {
-  return (worldZ / SPAWN_Z) * 24;
+  return (worldZ / SPAWN_Z) * 32;
 }
 
 // ── Sky colors per career stage ──────────────────────────────────────────────
@@ -56,13 +57,13 @@ const DEFENDER_JERSEY: Record<
   HallOfFame: { body: 0x1a1a1a, helmet: 0xdaa520, accent: 0xffd700 },
 };
 
-// ── Per-type defender accent colors (on top of stage palette) ─────────────────
+// ── Per-type defender accent colors ─────────────────────────────────────────
 const DEFENDER_TYPE_ACCENT: Record<string, number> = {
-  dt: 0x8b2222, // deep red — power
-  de: 0xe05050, // bright red — speed rush
-  lb: 0xc05020, // orange — thumper
-  cb: 0x4a90d9, // blue — quick corner
-  s: 0x2e7bd6, // deep blue — safety
+  dt: 0x8b2222,
+  de: 0xe05050,
+  lb: 0xc05020,
+  cb: 0x4a90d9,
+  s: 0x2e7bd6,
 };
 
 // ── Emoji orb colors ─────────────────────────────────────────────────────────
@@ -76,18 +77,13 @@ const EMOJI_COLORS: Record<string, number> = {
 };
 
 // ── ISOMETRIC TILE FLOOR ─────────────────────────────────────────────────────
-// The floor is a 5-column grid of 64-unit isometric tiles, rendered in 3D
-// world space as a standard top-plane but viewed from the rear camera at an
-// angle that gives the isometric illusion. Each tile row scrolls as fieldScroll
-// advances. We keep a pool of tile meshes and recycle them.
-
 const TILE_COLS = 5;
-const TILE_W = 2.0; // world units per tile width (matches lane spacing)
+const TILE_W = 3.0; // world units per tile width (wider lanes)
 const TILE_D = 1.5; // world units per tile depth
-const TILE_ROWS_VISIBLE = 20; // rows in the pool
+const TILE_ROWS_VISIBLE = 20;
 
 interface TileRow {
-  meshes: THREE.Mesh[]; // one per column
+  meshes: THREE.Mesh[];
   baseZ: number;
 }
 
@@ -116,7 +112,6 @@ function buildTileMaterial(
   return new THREE.MeshLambertMaterial({ color });
 }
 
-/** Returns just the color number without allocating a material object */
 function _tileMaterialColor(
   col: number,
   row: number,
@@ -140,9 +135,7 @@ function _tileMaterialColor(
 }
 
 function buildIsoTileGeo(): THREE.BufferGeometry {
-  // Flat tile with slight bevel for isometric look
-  const geo = new THREE.BoxGeometry(TILE_W - 0.04, 0.06, TILE_D - 0.04);
-  return geo;
+  return new THREE.BoxGeometry(TILE_W - 0.04, 0.06, TILE_D - 0.04);
 }
 
 // ── Endzone tile texture ─────────────────────────────────────────────────────
@@ -161,13 +154,11 @@ function buildEndzoneTileTex(): THREE.CanvasTexture {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText("END", 64, 48);
-  const tex = new THREE.CanvasTexture(c);
-  return tex;
+  return new THREE.CanvasTexture(c);
 }
 
 // ── Billboard canvas texture builders ────────────────────────────────────────
 
-/** Build player aura billboard — full-body pixel silhouette */
 function buildPlayerAuraTex(
   turbo: boolean,
   shield: boolean,
@@ -187,21 +178,16 @@ function buildPlayerAuraTex(
       : "rgba(255,80,30,";
   const alpha = shield ? "0.55)" : turbo ? "0.65)" : "0.35)";
 
-  // Draw a rough humanoid silhouette
   ctx.fillStyle = glowColor + alpha;
   ctx.shadowColor = `${glowColor}0.9)`;
   ctx.shadowBlur = 18;
 
-  // Head
   ctx.beginPath();
   ctx.arc(64, 22, 16, 0, Math.PI * 2);
   ctx.fill();
-  // Torso
   ctx.fillRect(38, 36, 52, 60);
-  // Arms
   ctx.fillRect(18, 36, 22, 50);
   ctx.fillRect(88, 36, 22, 50);
-  // Legs
   ctx.fillRect(38, 96, 22, 72);
   ctx.fillRect(68, 96, 22, 72);
 
@@ -209,7 +195,6 @@ function buildPlayerAuraTex(
   return new THREE.CanvasTexture(c);
 }
 
-/** Build defender type silhouette billboard */
 function buildDefenderAuraTex(
   defType: string,
   _stage: CareerStage,
@@ -238,7 +223,6 @@ function buildDefenderAuraTex(
   ctx.fillStyle = col + baseAlpha;
 
   if (defType === "dt") {
-    // Wide, squat
     ctx.beginPath();
     ctx.arc(64, 24, 18, 0, Math.PI * 2);
     ctx.fill();
@@ -248,7 +232,6 @@ function buildDefenderAuraTex(
     ctx.fillRect(32, 104, 28, 64);
     ctx.fillRect(68, 104, 28, 64);
   } else if (defType === "de") {
-    // Tall, angular
     ctx.beginPath();
     ctx.arc(64, 18, 15, 0, Math.PI * 2);
     ctx.fill();
@@ -258,7 +241,6 @@ function buildDefenderAuraTex(
     ctx.fillRect(40, 100, 22, 80);
     ctx.fillRect(66, 100, 22, 80);
   } else if (defType === "lb") {
-    // Medium, hunched forward
     ctx.beginPath();
     ctx.arc(64, 26, 16, 0, Math.PI * 2);
     ctx.fill();
@@ -267,10 +249,8 @@ function buildDefenderAuraTex(
     ctx.fillRect(90, 44, 24, 46);
     ctx.fillRect(38, 96, 24, 72);
     ctx.fillRect(66, 96, 24, 72);
-    // Hunch: tilt body forward visually
     ctx.fillRect(36, 36, 56, 10);
   } else if (defType === "cb") {
-    // Slim, upright
     ctx.beginPath();
     ctx.arc(64, 16, 13, 0, Math.PI * 2);
     ctx.fill();
@@ -280,12 +260,11 @@ function buildDefenderAuraTex(
     ctx.fillRect(44, 92, 20, 82);
     ctx.fillRect(68, 92, 20, 82);
   } else {
-    // safety — slim, arms wide
     ctx.beginPath();
     ctx.arc(64, 16, 13, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillRect(44, 28, 40, 60);
-    ctx.fillRect(14, 28, 30, 36); // wide arms
+    ctx.fillRect(14, 28, 30, 36);
     ctx.fillRect(84, 28, 30, 36);
     ctx.fillRect(44, 88, 20, 80);
     ctx.fillRect(68, 88, 20, 80);
@@ -295,7 +274,6 @@ function buildDefenderAuraTex(
   return new THREE.CanvasTexture(c);
 }
 
-// ── Build emoji billboard canvas texture ─────────────────────────────────────
 function buildEmojiTex(emoji: string): THREE.CanvasTexture {
   const c = document.createElement("canvas");
   c.width = 64;
@@ -323,7 +301,6 @@ interface HumanoidParts {
   shieldSphere?: THREE.Mesh;
 }
 
-/** Build a face texture for the helmet visor */
 function buildHelmetFaceTex(isPlayer: boolean): THREE.CanvasTexture {
   const c = document.createElement("canvas");
   c.width = 64;
@@ -331,11 +308,9 @@ function buildHelmetFaceTex(isPlayer: boolean): THREE.CanvasTexture {
   const ctx = c.getContext("2d")!;
   ctx.fillStyle = isPlayer ? "rgba(255,210,0,0.8)" : "rgba(200,200,200,0.6)";
   ctx.fillRect(0, 0, 64, 32);
-  // Eye slots
   ctx.fillStyle = "rgba(0,0,0,0.9)";
   ctx.fillRect(10, 8, 16, 10);
   ctx.fillRect(38, 8, 16, 10);
-  // Facemask bars
   ctx.strokeStyle = isPlayer ? "rgba(255,180,0,1)" : "rgba(180,180,180,1)";
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -366,13 +341,11 @@ function buildHumanoid(
   const cleatMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
   const skinMat = new THREE.MeshLambertMaterial({ color: 0xc88050 });
 
-  // ── Head / Helmet ───────────────────────────────────────────────────────
   const helmetGeo = new THREE.SphereGeometry(0.35, 12, 8);
   const helmet = new THREE.Mesh(helmetGeo, helmetMat);
   helmet.position.set(0, 2.1, 0);
   group.add(helmet);
 
-  // Helmet face texture plane
   const faceTex = buildHelmetFaceTex(isPlayer);
   const facePlane = new THREE.Mesh(
     new THREE.PlaneGeometry(0.5, 0.25),
@@ -381,19 +354,16 @@ function buildHumanoid(
   facePlane.position.set(0, 2.05, 0.32);
   group.add(facePlane);
 
-  // Facemask bar (accent)
   const visorGeo = new THREE.BoxGeometry(0.55, 0.1, 0.06);
   const visor = new THREE.Mesh(visorGeo, accentMat);
   visor.position.set(0, 1.88, 0.32);
   group.add(visor);
 
-  // ── Torso / Jersey ─────────────────────────────────────────────────────
   const torsoGeo = new THREE.BoxGeometry(0.82, 1.05, 0.45);
   const torso = new THREE.Mesh(torsoGeo, bodyMat);
   torso.position.set(0, 1.25, 0);
   group.add(torso);
 
-  // Jersey number
   if (jerseyNumber !== null) {
     const numC = document.createElement("canvas");
     numC.width = 64;
@@ -413,13 +383,11 @@ function buildHumanoid(
     group.add(numMesh);
   }
 
-  // Shoulder pads — wider, more prominent
   for (const sx of [-0.56, 0.56]) {
     const padGeo = new THREE.BoxGeometry(0.32, 0.24, 0.55);
     const pad = new THREE.Mesh(padGeo, accentMat);
     pad.position.set(sx, 1.78, 0);
     group.add(pad);
-    // Pad edge highlight
     const edgeGeo = new THREE.BoxGeometry(0.32, 0.04, 0.55);
     const edge = new THREE.Mesh(
       edgeGeo,
@@ -433,7 +401,6 @@ function buildHumanoid(
     group.add(edge);
   }
 
-  // ── Upper arms ─────────────────────────────────────────────────────────
   const uArmGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.52, 8);
   const leftUpperArm = new THREE.Mesh(uArmGeo, bodyMat);
   leftUpperArm.position.set(-0.62, 1.55, 0);
@@ -445,7 +412,6 @@ function buildHumanoid(
   rightUpperArm.rotation.z = -0.3;
   group.add(rightUpperArm);
 
-  // ── Forearms ───────────────────────────────────────────────────────────
   const foreArmGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.46, 8);
   const leftForeArm = new THREE.Mesh(foreArmGeo, skinMat);
   leftForeArm.position.set(-0.72, 1.2, 0);
@@ -457,16 +423,14 @@ function buildHumanoid(
   rightForeArm.rotation.z = -0.5;
   group.add(rightForeArm);
 
-  // Football prop in right hand (player only)
   if (isPlayer) {
     const fbGeo = new THREE.SphereGeometry(0.18, 8, 6);
-    fbGeo.scale(1, 0.7, 0.55); // oblate football shape
+    fbGeo.scale(1, 0.7, 0.55);
     const fbMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
     const fb = new THREE.Mesh(fbGeo, fbMat);
     fb.position.set(0.82, 1.1, 0.1);
     fb.rotation.z = -0.8;
     group.add(fb);
-    // Football seam
     const seamMat = new THREE.LineBasicMaterial({
       color: 0xffffff,
       opacity: 0.7,
@@ -481,13 +445,11 @@ function buildHumanoid(
     group.add(seam);
   }
 
-  // ── Hips / Waist ────────────────────────────────────────────────────────
   const hipGeo = new THREE.BoxGeometry(0.7, 0.28, 0.4);
   const hip = new THREE.Mesh(hipGeo, pantsMat);
   hip.position.set(0, 0.68, 0);
   group.add(hip);
 
-  // ── Upper legs ─────────────────────────────────────────────────────────
   const uLegGeo = new THREE.CylinderGeometry(0.21, 0.19, 0.58, 8);
   const leftUpperLeg = new THREE.Mesh(uLegGeo, pantsMat);
   leftUpperLeg.position.set(-0.22, 0.42, 0);
@@ -497,7 +459,6 @@ function buildHumanoid(
   rightUpperLeg.position.set(0.22, 0.42, 0);
   group.add(rightUpperLeg);
 
-  // ── Lower legs ─────────────────────────────────────────────────────────
   const lLegGeo = new THREE.CylinderGeometry(0.18, 0.16, 0.52, 8);
   const leftLowerLeg = new THREE.Mesh(lLegGeo, darkPantsMat);
   leftLowerLeg.position.set(-0.22, 0.12, 0);
@@ -507,7 +468,6 @@ function buildHumanoid(
   rightLowerLeg.position.set(0.22, 0.12, 0);
   group.add(rightLowerLeg);
 
-  // ── Feet / Cleats ───────────────────────────────────────────────────────
   const cleatGeo = new THREE.BoxGeometry(0.26, 0.15, 0.46);
   const leftCleat = new THREE.Mesh(cleatGeo, cleatMat);
   leftCleat.position.set(-0.22, -0.14, 0.08);
@@ -517,7 +477,6 @@ function buildHumanoid(
   rightCleat.position.set(0.22, -0.14, 0.08);
   group.add(rightCleat);
 
-  // Ground shadow ellipse
   const shadowGeo = new THREE.CircleGeometry(0.55, 16);
   const shadowMat = new THREE.MeshBasicMaterial({
     color: 0x000000,
@@ -550,6 +509,12 @@ interface PlayerMesh extends HumanoidParts {
   auraTex?: THREE.CanvasTexture;
   lastTurbo?: boolean;
   lastShield?: boolean;
+  // Spritesheet billboard
+  spriteBillboard?: THREE.Mesh;
+  spriteMat?: THREE.MeshBasicMaterial;
+  spriteFrameCol?: number;
+  spriteFrameRow?: number;
+  groundShadow?: THREE.Mesh;
 }
 
 interface ObsMeshEntry {
@@ -558,6 +523,14 @@ interface ObsMeshEntry {
   parts?: HumanoidParts;
   auraSprite?: THREE.Sprite;
 }
+
+// ── Spritesheet constants ────────────────────────────────────────────────────
+// players-rear-spritesheet-transparent.dim_256x192.png
+// 4 columns × 3 rows = 12 frames, each 64×64px
+const SPRITE_COLS = 4;
+const SPRITE_ROWS = 3;
+const SPRITE_FRAME_W = 1 / SPRITE_COLS;
+const SPRITE_FRAME_H = 1 / SPRITE_ROWS;
 
 // ── ThreeRenderer ────────────────────────────────────────────────────────────
 export default class ThreeRenderer {
@@ -573,6 +546,7 @@ export default class ThreeRenderer {
   private floatSprites: Map<string, THREE.Sprite> = new Map();
   private prevStage: CareerStage = "HighSchool";
   private emojiTexCache: Map<string, THREE.CanvasTexture> = new Map();
+  private playerSpriteTex: THREE.Texture | null = null;
 
   // Isometric tile pool
   private tileRows: TileRow[] = [];
@@ -592,12 +566,13 @@ export default class ThreeRenderer {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(SKY_COLORS.HighSchool);
-    this.scene.fog = new THREE.Fog(SKY_COLORS.HighSchool, 30, 80);
+    // Push fog further to match wider view depth
+    this.scene.fog = new THREE.Fog(SKY_COLORS.HighSchool, 40, 100);
 
-    // Camera: rear-view, above and behind player, angled for isometric feel
-    this.camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 120);
-    this.camera.position.set(0, 7, -11);
-    this.camera.lookAt(0, 1, 8);
+    // Camera: low rear-view, close to ground, wide FOV 70 for strong convergence
+    this.camera = new THREE.PerspectiveCamera(70, w / h, 0.1, 120);
+    this.camera.position.set(0, 3.5, -8);
+    this.camera.lookAt(0, 0.5, 14);
 
     // ── Lighting ──────────────────────────────────────────────────────────
     this.dirLight = new THREE.DirectionalLight(0xffffff, 1.3);
@@ -614,19 +589,45 @@ export default class ThreeRenderer {
     this.tileGeo = buildIsoTileGeo();
     this._buildTilePool();
 
-    // ── Lane lines ─────────────────────────────────────────────────────────
+    // ── Lane lines — wider spacing, more visible ───────────────────────────
     for (let i = 0; i <= TILE_COLS; i++) {
-      const laneGeo = new THREE.PlaneGeometry(0.05, 60);
+      const laneGeo = new THREE.PlaneGeometry(0.06, 80);
       const laneMat = new THREE.MeshLambertMaterial({
-        color: 0xffffff,
-        opacity: 0.4,
+        color: 0xf0ece0, // off-white matching reference
+        opacity: 0.7,
         transparent: true,
       });
       const laneMesh = new THREE.Mesh(laneGeo, laneMat);
       laneMesh.rotation.x = -Math.PI / 2;
-      const lx = -5 + i * 2;
-      laneMesh.position.set(lx, 0.05, 22);
+      const lx = -6 + i * 3; // lanes at [-6, -3, 0, 3, 6]
+      laneMesh.position.set(lx, 0.05, 30);
       this.scene.add(laneMesh);
+    }
+
+    // ── Scrimmage / starting line at player's feet ─────────────────────────
+    const scrimGeo = new THREE.PlaneGeometry(18, 0.12);
+    const scrimMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const scrimLine = new THREE.Mesh(scrimGeo, scrimMat);
+    scrimLine.rotation.x = -Math.PI / 2;
+    scrimLine.position.set(0, 0.06, 1);
+    this.scene.add(scrimLine);
+
+    // ── Yard lines every 8 scene units forward ─────────────────────────────
+    for (let yz = 9; yz < 72; yz += 8) {
+      const yardGeo = new THREE.PlaneGeometry(18, 0.06);
+      const yardMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.4,
+      });
+      const yardLine = new THREE.Mesh(yardGeo, yardMat);
+      yardLine.rotation.x = -Math.PI / 2;
+      yardLine.position.set(0, 0.06, yz);
+      this.scene.add(yardLine);
     }
 
     // ── Endzone group ──────────────────────────────────────────────────────
@@ -640,31 +641,90 @@ export default class ThreeRenderer {
         emissive: 0x221100,
       });
       const m = new THREE.Mesh(geo, mat);
-      const cx = -4 + col * TILE_W;
+      const cx = -6 + col * TILE_W;
       m.position.set(cx, 0.01, 46);
       this.endzoneGroup.add(m);
     }
     this.scene.add(this.endzoneGroup);
 
-    // ── Stands ────────────────────────────────────────────────────────────
+    // ── Stands — wider to match wider field ───────────────────────────────
     const standMat = new THREE.MeshLambertMaterial({ color: 0x1a1a2e });
-    for (const side of [-11, 11] as const) {
-      const standGeo = new THREE.BoxGeometry(1.5, 3, 60);
+    for (const side of [-14, 14] as const) {
+      const standGeo = new THREE.BoxGeometry(1.5, 3, 80);
       const stand = new THREE.Mesh(standGeo, standMat);
-      stand.position.set(side, 1.5, 22);
+      stand.position.set(side, 1.5, 30);
       this.scene.add(stand);
     }
 
-    // ── Player humanoid ───────────────────────────────────────────────────
+    // ── Player: spritesheet billboard (3D humanoid hidden, fallback only) ──
     const parts = buildHumanoid(0xe83030, 0xc02020, 0xffd700, 32, true);
     this.playerMesh = parts as PlayerMesh;
     this.playerMesh.group.position.set(0, 0, 0);
+    // Hide 3D humanoid — sprite billboard is primary
+    this.playerMesh.group.visible = false;
     this.scene.add(this.playerMesh.group);
 
-    // Player aura billboard
+    // Ground shadow ellipse (scene-level, always visible)
+    const shadowGeo = new THREE.CircleGeometry(1.1, 24);
+    const shadowMat = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.35,
+    });
+    const groundShadow = new THREE.Mesh(shadowGeo, shadowMat);
+    groundShadow.rotation.x = -Math.PI / 2;
+    groundShadow.position.set(0, 0.02, 0);
+    this.scene.add(groundShadow);
+    this.playerMesh.groundShadow = groundShadow;
+
+    // Load spritesheet billboard
+    this._buildPlayerSpriteBillboard();
+
+    // Player aura (scene-level, on top of sprite)
     this._rebuildPlayerAura(false, false);
 
     this.cameraPivotX = 0;
+  }
+
+  /** Load the spritesheet and build the player billboard plane */
+  private _buildPlayerSpriteBillboard(): void {
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      "/assets/generated/players-rear-spritesheet-transparent.dim_256x192.png",
+      (tex) => {
+        tex.magFilter = THREE.NearestFilter; // pixel-art crisp
+        tex.minFilter = THREE.NearestFilter;
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        // Start at frame 0 (row 0, col 0) — top-left of sheet
+        tex.repeat.set(SPRITE_FRAME_W, SPRITE_FRAME_H);
+        tex.offset.set(0, 1 - SPRITE_FRAME_H); // row 0 top: offset y = 2/3
+        this.playerSpriteTex = tex;
+
+        const geo = new THREE.PlaneGeometry(3, 4);
+        const mat = new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          alphaTest: 0.1,
+          side: THREE.FrontSide,
+        });
+        const plane = new THREE.Mesh(geo, mat);
+        // Feet near ground: center at y=1.8
+        plane.position.set(0, 1.8, 0);
+        // Rear view: plane already faces camera (no extra rotation needed)
+        plane.rotation.y = 0;
+        this.scene.add(plane);
+        this.playerMesh.spriteBillboard = plane;
+        this.playerMesh.spriteMat = mat;
+        this.playerMesh.spriteFrameCol = 0;
+        this.playerMesh.spriteFrameRow = 0;
+      },
+      undefined,
+      () => {
+        // Fallback: show 3D humanoid if sprite fails
+        this.playerMesh.group.visible = true;
+      },
+    );
   }
 
   private _buildTilePool(): void {
@@ -673,7 +733,9 @@ export default class ThreeRenderer {
       for (let col = 0; col < TILE_COLS; col++) {
         const mat = buildTileMaterial(col, row, this.currentStage);
         const m = new THREE.Mesh(this.tileGeo, mat);
-        const cx = -4 + col * TILE_W;
+        // Tile centers for TILE_W=3: col 0→-4.5, 1→-1.5, 2→1.5, 3→4.5, 4→7.5
+        // Actually center tiles symmetrically: offset = -6 + col*3 + 1.5
+        const cx = -6 + col * TILE_W + TILE_W / 2;
         const rz = row * TILE_D;
         m.position.set(cx, 0, rz);
         this.scene.add(m);
@@ -685,9 +747,8 @@ export default class ThreeRenderer {
 
   private _rebuildPlayerAura(turbo: boolean, shield: boolean): void {
     const pm = this.playerMesh;
-    // Remove old
     if (pm.auraSprite) {
-      pm.group.remove(pm.auraSprite);
+      this.scene.remove(pm.auraSprite);
       (pm.auraSprite.material as THREE.SpriteMaterial).map?.dispose();
       (pm.auraSprite.material as THREE.SpriteMaterial).dispose();
     }
@@ -702,9 +763,9 @@ export default class ThreeRenderer {
       depthWrite: false,
     });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(2.4, 3.6, 1);
-    sprite.position.set(0, 1.3, 0);
-    pm.group.add(sprite);
+    sprite.scale.set(3.2, 4.8, 1);
+    sprite.position.set(0, 2.0, 0);
+    this.scene.add(sprite);
     pm.auraSprite = sprite;
     pm.auraTex = tex;
   }
@@ -721,7 +782,7 @@ export default class ThreeRenderer {
         SKY_COLORS[gs.careerStage],
       );
       this.hemiLight.groundColor = new THREE.Color(GROUND_SKY[gs.careerStage]);
-      // FIXED: update tile material colors directly — no new material creation (no leak)
+      // Update tile colors directly (no new materials = no leak)
       for (let row = 0; row < TILE_ROWS_VISIBLE; row++) {
         const tr = this.tileRows[row];
         if (!tr) continue;
@@ -734,27 +795,101 @@ export default class ThreeRenderer {
     }
 
     // ── Scroll isometric tile floor ────────────────────────────────────────
-    // FIXED: fieldScroll is raw world distance; scroll by remainder in tile-pool depth
     const totalDepth = TILE_ROWS_VISIBLE * TILE_D;
     this.tileScrollOffset = gs.fieldScroll % totalDepth;
     for (let row = 0; row < TILE_ROWS_VISIBLE; row++) {
       const tr = this.tileRows[row];
       if (!tr) continue;
-      // Compute scrolled Z
-      let rz = (tr.baseZ - this.tileScrollOffset + totalDepth) % totalDepth;
+      const rz = (tr.baseZ - this.tileScrollOffset + totalDepth) % totalDepth;
       for (const m of tr.meshes) {
         m.position.z = rz;
-        m.visible = rz > -2 && rz < 52;
+        m.visible = rz > -2 && rz < 60;
       }
     }
 
-    // ── Player position + animation ────────────────────────────────────────
+    // ── Player position ────────────────────────────────────────────────────
     const targetX = this._playerWorldX(gs);
     this.cameraPivotX += (targetX - this.cameraPivotX) * Math.min(1, 8 * dt);
 
     const pm = this.playerMesh;
+    pm.group.position.x = this.cameraPivotX;
 
-    // Legend color sync
+    const jumpY = gs.jumping ? Math.max(0, (gs.jumpY / 220) * 3) : 0;
+
+    if (gs.phase === "tackled") {
+      const elapsed = 1.8 - gs.tackleTimer;
+      pm.group.rotation.x = Math.min(Math.PI * 0.4, elapsed * 0.8);
+      pm.group.position.y = Math.max(-0.5, -0.5 * Math.min(1, elapsed / 1.8));
+    } else {
+      pm.group.rotation.x = 0;
+      pm.group.position.y = 0;
+    }
+
+    if (gs.spinning) {
+      pm.group.rotation.y = gs.spinAngle;
+    } else {
+      pm.group.rotation.y = 0;
+    }
+
+    // ── Sprite billboard position + animation ──────────────────────────────
+    if (pm.spriteBillboard && pm.spriteMat && this.playerSpriteTex) {
+      const billboard = pm.spriteBillboard;
+      billboard.position.x = this.cameraPivotX;
+      billboard.position.y = 1.8 + jumpY;
+
+      if (gs.phase === "tackled") {
+        const elapsed = 1.8 - gs.tackleTimer;
+        billboard.position.y = 1.8 - Math.max(0, elapsed * 0.4);
+        billboard.rotation.x = Math.min(Math.PI * 0.35, elapsed * 0.7);
+        pm.spriteFrameCol = 0;
+        pm.spriteFrameRow = 2;
+      } else {
+        billboard.rotation.x = 0;
+        if (gs.spinning) {
+          const spinFrame =
+            Math.floor((gs.elapsedTime ?? 0) * 12) % SPRITE_COLS;
+          pm.spriteFrameCol = spinFrame;
+          pm.spriteFrameRow = 1;
+          billboard.rotation.y = gs.spinAngle * 0.3;
+        } else {
+          billboard.rotation.y = 0;
+          if (gs.phase === "playing") {
+            pm.spriteFrameCol =
+              Math.floor((gs.elapsedTime ?? 0) * 8) % SPRITE_COLS;
+            pm.spriteFrameRow = 0;
+          } else {
+            pm.spriteFrameCol = 0;
+            pm.spriteFrameRow = 0;
+          }
+        }
+      }
+
+      // Update UV sub-rect
+      const fc = pm.spriteFrameCol ?? 0;
+      const fr = pm.spriteFrameRow ?? 0;
+      this.playerSpriteTex.offset.set(
+        fc * SPRITE_FRAME_W,
+        1 - (fr + 1) * SPRITE_FRAME_H,
+      );
+      this.playerSpriteTex.needsUpdate = true;
+    }
+
+    // Ground shadow follows player X
+    if (pm.groundShadow) {
+      pm.groundShadow.position.x = this.cameraPivotX;
+      pm.groundShadow.position.y = 0.02;
+      if (gs.jumping) {
+        const jFrac = jumpY / 3;
+        (pm.groundShadow.material as THREE.MeshBasicMaterial).opacity =
+          0.35 * (1 - jFrac * 0.6);
+        pm.groundShadow.scale.setScalar(1 + jFrac * 0.4);
+      } else {
+        (pm.groundShadow.material as THREE.MeshBasicMaterial).opacity = 0.35;
+        pm.groundShadow.scale.setScalar(1);
+      }
+    }
+
+    // Legend color sync (humanoid ref, still used if sprite fails)
     if (gs.activeLegend) {
       const lp = LEGENDARY_PLAYERS.find((l) => l.id === gs.activeLegend);
       if (lp) {
@@ -763,47 +898,6 @@ export default class ThreeRenderer {
           lp.secondaryColor,
         );
       }
-    }
-
-    pm.group.position.x = this.cameraPivotX;
-
-    // Jump
-    if (gs.jumping) {
-      pm.group.position.y = Math.max(0, (gs.jumpY / 220) * 3);
-    } else {
-      pm.group.position.y = 0;
-    }
-
-    // Tackle lean
-    if (gs.phase === "tackled") {
-      const elapsed = 1.8 - gs.tackleTimer;
-      pm.group.rotation.x = Math.min(Math.PI * 0.4, elapsed * 0.8);
-      pm.group.position.y = Math.max(-0.5, -0.5 * Math.min(1, elapsed / 1.8));
-    } else {
-      pm.group.rotation.x = 0;
-    }
-
-    // Spin
-    if (gs.spinning) {
-      pm.group.rotation.y = gs.spinAngle;
-    } else {
-      pm.group.rotation.y = 0;
-    }
-
-    // Leg stride animation - FIXED: time-based (not frame-rate-dependent)
-    if (gs.phase === "playing") {
-      const stride = Math.sin((gs.elapsedTime ?? 0) * 10);
-      pm.leftUpperLeg.rotation.x = stride * 0.65;
-      pm.rightUpperLeg.rotation.x = -stride * 0.65;
-      pm.leftLowerLeg.rotation.x = Math.max(0, stride * 0.4);
-      pm.rightLowerLeg.rotation.x = Math.max(0, -stride * 0.4);
-      pm.leftUpperArm.rotation.x = -stride * 0.4;
-      pm.rightUpperArm.rotation.x = stride * 0.4;
-    } else {
-      pm.leftUpperLeg.rotation.x = 0;
-      pm.rightUpperLeg.rotation.x = 0;
-      pm.leftLowerLeg.rotation.x = 0;
-      pm.rightLowerLeg.rotation.x = 0;
     }
 
     // Aura billboard — rebuild only when state changes
@@ -816,7 +910,8 @@ export default class ThreeRenderer {
       this._rebuildPlayerAura(gs.turboActive, gs.shieldActive);
     }
     if (pm.auraSprite && needAura) {
-      // Pulse the aura opacity - time-based
+      pm.auraSprite.position.x = this.cameraPivotX;
+      pm.auraSprite.position.y = 2.0 + jumpY;
       (pm.auraSprite.material as THREE.SpriteMaterial).opacity =
         0.55 + 0.35 * Math.sin((gs.elapsedTime ?? 0) * 8);
     }
@@ -824,7 +919,7 @@ export default class ThreeRenderer {
     // Shield wireframe sphere
     if (gs.shieldActive) {
       if (!pm.shieldMesh) {
-        const sg = new THREE.SphereGeometry(1.4, 12, 8);
+        const sg = new THREE.SphereGeometry(1.8, 12, 8);
         pm.shieldMesh = new THREE.Mesh(
           sg,
           new THREE.MeshLambertMaterial({
@@ -834,11 +929,13 @@ export default class ThreeRenderer {
             opacity: 0.35,
           }),
         );
-        pm.shieldMesh.position.set(0, 1.2, 0);
-        pm.group.add(pm.shieldMesh);
+        pm.shieldMesh.position.set(0, 1.8, 0);
+        this.scene.add(pm.shieldMesh);
       }
+      pm.shieldMesh.position.x = this.cameraPivotX;
+      pm.shieldMesh.position.y = 1.8 + jumpY;
     } else if (pm.shieldMesh) {
-      pm.group.remove(pm.shieldMesh);
+      this.scene.remove(pm.shieldMesh);
       pm.shieldMesh.geometry.dispose();
       (pm.shieldMesh.material as THREE.MeshLambertMaterial).dispose();
       pm.shieldMesh = undefined;
@@ -848,19 +945,21 @@ export default class ThreeRenderer {
     if (gs.turboActive) {
       if (!pm.turboLight) {
         pm.turboLight = new THREE.PointLight(0xffd700, 2.5, 6);
-        pm.turboLight.position.set(0, 1, 0);
-        pm.group.add(pm.turboLight);
+        pm.turboLight.position.set(0, 1.5, 0);
+        this.scene.add(pm.turboLight);
       }
+      pm.turboLight.position.x = this.cameraPivotX;
+      pm.turboLight.position.y = 1.5 + jumpY;
     } else if (pm.turboLight) {
-      pm.group.remove(pm.turboLight);
+      this.scene.remove(pm.turboLight);
       pm.turboLight = undefined;
     }
 
     // ── Camera smooth follow ───────────────────────────────────────────────
-    // FIXED: single-layer smoothing - camera directly tracks cameraPivotX (no double lag)
     this.camera.position.x = this.cameraPivotX;
-    this.camera.position.z = -11;
-    this.camera.lookAt(this.cameraPivotX, 1, 8);
+    this.camera.position.y = 3.5;
+    this.camera.position.z = -8;
+    this.camera.lookAt(this.cameraPivotX, 0.5, 14);
 
     // ── Obstacle meshes ────────────────────────────────────────────────────
     const currentIds = new Set(gs.obstacles.map((o) => o.id));
@@ -912,7 +1011,7 @@ export default class ThreeRenderer {
 
       entry.group.position.set(ox, obs.type === "crate" ? 0.4 : 0, oz);
 
-      // Defender leg stride + face camera - FIXED: time-based
+      // Defender leg stride - time-based
       if (entry.parts && gs.phase === "playing") {
         const offset = obs.id * 1.3;
         const defStride = Math.sin((gs.elapsedTime ?? 0) * 9 + offset);
@@ -926,7 +1025,7 @@ export default class ThreeRenderer {
           0.5 + Math.sin((gs.elapsedTime ?? 0) * 5) * 0.2;
       }
 
-      // Aura billboard always faces camera for defenders - time-based
+      // Aura billboard pulse - time-based
       if (entry.auraSprite) {
         entry.auraSprite.material.opacity =
           0.4 + 0.15 * Math.sin((gs.elapsedTime ?? 0) * 6 + obs.id);
@@ -934,7 +1033,6 @@ export default class ThreeRenderer {
     }
 
     // ── Floating text sprites ──────────────────────────────────────────────
-    // FIXED: key by stable ft.id, not array index (prevents label mismatch on array shift)
     const activeFloatKeys = new Set(gs.floats.map((ft) => `ft_${ft.id}`));
     for (const [key, sprite] of this.floatSprites) {
       if (!activeFloatKeys.has(key)) {
@@ -997,6 +1095,11 @@ export default class ThreeRenderer {
     this.emojiTexCache.clear();
     this.tileGeo.dispose();
     this.grassTexture?.dispose();
+    this.playerSpriteTex?.dispose();
+    if (this.playerMesh?.spriteMat) {
+      this.playerMesh.spriteMat.map?.dispose();
+      this.playerMesh.spriteMat.dispose();
+    }
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
@@ -1016,25 +1119,22 @@ export default class ThreeRenderer {
     stage: CareerStage,
   ): ObsMeshEntry {
     const c = DEFENDER_JERSEY[stage];
-    // Override body accent with per-type color for readability
     const typeAccent = DEFENDER_TYPE_ACCENT[defType] ?? c.accent;
     const parts = buildHumanoid(c.body, c.helmet, typeAccent, null, false);
     const group = parts.group;
 
-    // Scale by defender type for distinct silhouettes
     if (defType === "dt") {
-      group.scale.set(1.45, 0.88, 1.45); // wide and squat
+      group.scale.set(1.45, 0.88, 1.45);
     } else if (defType === "lb") {
-      group.scale.set(1.15, 1.08, 1.15); // medium hunk
+      group.scale.set(1.15, 1.08, 1.15);
     } else if (defType === "de") {
-      group.scale.set(0.95, 1.2, 0.95); // tall angular rusher
+      group.scale.set(0.95, 1.2, 0.95);
     } else if (defType === "cb") {
-      group.scale.set(0.88, 1.22, 0.88); // slim fast corner
+      group.scale.set(0.88, 1.22, 0.88);
     } else if (defType === "s") {
-      group.scale.set(0.9, 1.18, 0.9); // slim safety
+      group.scale.set(0.9, 1.18, 0.9);
     }
 
-    // Defender aura billboard
     const auraTex = buildDefenderAuraTex(defType, stage);
     const auraMat = new THREE.SpriteMaterial({
       map: auraTex,
@@ -1046,7 +1146,6 @@ export default class ThreeRenderer {
     auraSprite.position.set(0, 1.2, 0);
     group.add(auraSprite);
 
-    // Defender label sprite above head
     const label =
       DEFENDER_STATS[defType as keyof typeof DEFENDER_STATS]?.label ?? "DEF";
     const labelSprite = this._buildFloatSprite(
@@ -1066,7 +1165,6 @@ export default class ThreeRenderer {
   ): ObsMeshEntry {
     const group = new THREE.Group();
 
-    // Slightly taller/wider crates for isometric visibility
     const geo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
 
     const stageColors: Record<CareerStage, number> = {
@@ -1084,7 +1182,6 @@ export default class ThreeRenderer {
     const crate = new THREE.Mesh(geo, mat);
     group.add(crate);
 
-    // Thick edge lines
     const edgesGeo = new THREE.EdgesGeometry(geo);
     const edgesMat = new THREE.LineBasicMaterial({
       color: 0x000000,
@@ -1093,7 +1190,6 @@ export default class ThreeRenderer {
     });
     group.add(new THREE.LineSegments(edgesGeo, edgesMat));
 
-    // X cross on front face
     const crossMat = new THREE.LineBasicMaterial({
       color: 0x000000,
       opacity: 0.45,
@@ -1116,7 +1212,6 @@ export default class ThreeRenderer {
     if (hasPowerUp) {
       const glowLight = new THREE.PointLight(0xffd700, 1.8, 3.5);
       group.add(glowLight);
-      // Glowing orb on top
       const orbGeo = new THREE.SphereGeometry(0.18, 8, 6);
       const orbMat = new THREE.MeshLambertMaterial({
         color: 0xffd700,
