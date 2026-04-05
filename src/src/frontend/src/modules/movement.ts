@@ -75,9 +75,10 @@ export function updateMovement(gs: GameState, dt: number): void {
 
   // ── Lane shift ─────────────────────────────────────────────────
   if (gs.laneT < 1) {
-    gs.laneT = Math.min(1, gs.laneT + (5 + gs.skills.agility * 0.8) * dt);
+    gs.laneT = Math.min(1, gs.laneT + (6 + gs.skills.agility * 0.8) * dt);
   } else {
     gs.lane = gs.targetLane;
+    gs.fromLane = gs.targetLane; // sync fromLane when settled
   }
 
   // ── Jump ───────────────────────────────────────────────────────
@@ -147,19 +148,31 @@ export function laneX(lane: number): number {
 }
 
 export function playerScreenX(gs: GameState): number {
-  const from = laneX(gs.lane);
+  const from = laneXFrac(gs.fromLane);
   const to = laneX(gs.targetLane);
   return from + (to - from) * gs.laneT;
 }
 
+// Interpolate laneX for fractional lane values
+function laneXFrac(frac: number): number {
+  const lo = Math.floor(Math.max(0, Math.min(4, frac)));
+  const hi = Math.ceil(Math.max(0, Math.min(4, frac)));
+  const t = frac - lo;
+  return laneX(lo) + (laneX(hi) - laneX(lo)) * t;
+}
+
 export function inputLeft(gs: GameState) {
   if (gs.targetLane > 0) {
+    // Snap fromLane to current interpolated position to prevent backward snap
+    gs.fromLane = gs.fromLane + (gs.targetLane - gs.fromLane) * gs.laneT;
     gs.targetLane--;
     gs.laneT = 0;
   }
 }
 export function inputRight(gs: GameState) {
   if (gs.targetLane < 4) {
+    // Snap fromLane to current interpolated position to prevent backward snap
+    gs.fromLane = gs.fromLane + (gs.targetLane - gs.fromLane) * gs.laneT;
     gs.targetLane++;
     gs.laneT = 0;
   }

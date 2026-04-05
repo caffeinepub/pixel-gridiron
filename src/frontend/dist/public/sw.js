@@ -1,6 +1,6 @@
 // Pixel Gridiron Service Worker
 // Bump CACHE_VERSION every deploy to bust old caches
-const CACHE_VERSION = 'pixel-gridiron-v15';
+const CACHE_VERSION = 'pixel-gridiron-v20';
 const CACHE_NAME = CACHE_VERSION;
 
 // On install: activate immediately, don't wait for old SW to die

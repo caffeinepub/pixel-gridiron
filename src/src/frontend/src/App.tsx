@@ -287,13 +287,25 @@ export default function App() {
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* Game canvas fills entire screen */}
-      <GameCanvas
-        ref={canvasRef}
-        gameStateRef={gameStateRef}
-        onScoreUpdate={handleScoreUpdate}
-        onTackled={handleTackled}
-      />
+      {/* Game canvas fills device screen minus bottom 250px for controls/tabs */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 250,
+          overflow: "hidden",
+        }}
+      >
+        <GameCanvas
+          ref={canvasRef}
+          gameStateRef={gameStateRef}
+          onScoreUpdate={handleScoreUpdate}
+          onTackled={handleTackled}
+          canvasStyle={{ width: "100%", height: "100%", objectFit: "fill" }}
+        />
+      </div>
 
       {/* HUD overlay — top bar */}
       <div
@@ -483,7 +495,7 @@ export default function App() {
         type="button"
         style={{
           ...btnBase,
-          bottom: 20,
+          bottom: 170,
           left: 12,
           width: 88,
           height: 68,
@@ -505,7 +517,7 @@ export default function App() {
         type="button"
         style={{
           ...btnBase,
-          bottom: 20,
+          bottom: 170,
           left: 112,
           width: 88,
           height: 68,
@@ -527,7 +539,7 @@ export default function App() {
         type="button"
         style={{
           ...btnBase,
-          bottom: 100,
+          bottom: 200,
           right: 92,
           width: 72,
           height: 52,
@@ -553,7 +565,7 @@ export default function App() {
         type="button"
         style={{
           ...btnBase,
-          bottom: 100,
+          bottom: 200,
           right: 12,
           width: 72,
           height: 52,
@@ -579,7 +591,7 @@ export default function App() {
         type="button"
         style={{
           ...btnBase,
-          bottom: 24,
+          bottom: 164,
           right: 40,
           width: 96,
           height: 60,
@@ -1196,6 +1208,159 @@ export default function App() {
           },
         }}
       />
+
+      {/* Bottom tab bar — lives in the bottom 250px zone below the game canvas */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: 52,
+          background: "rgba(8,10,14,0.97)",
+          borderTop: "1px solid rgba(63,174,90,0.2)",
+          display: "flex",
+          alignItems: "stretch",
+          zIndex: 18,
+        }}
+      >
+        {/* GAME tab */}
+        <button
+          type="button"
+          onClick={() => setScreen("game")}
+          style={{
+            flex: 1,
+            background: screen === "game" ? "rgba(63,174,90,0.15)" : "none",
+            border: "none",
+            borderTop:
+              screen === "game" ? "2px solid #3FAE5A" : "2px solid transparent",
+            color: screen === "game" ? "#3FAE5A" : "#4A545D",
+            fontFamily: "monospace",
+            fontWeight: 700,
+            fontSize: 9,
+            letterSpacing: "0.06em",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>🏈</span>
+          GAME
+        </button>
+        {/* SKILLS tab */}
+        <button
+          type="button"
+          onClick={() => setScreen("skill_tree")}
+          style={{
+            flex: 1,
+            background:
+              screen === "skill_tree" ? "rgba(63,174,90,0.15)" : "none",
+            border: "none",
+            borderTop:
+              screen === "skill_tree"
+                ? "2px solid #3FAE5A"
+                : "2px solid transparent",
+            color: screen === "skill_tree" ? "#3FAE5A" : "#4A545D",
+            fontFamily: "monospace",
+            fontWeight: 700,
+            fontSize: 9,
+            letterSpacing: "0.06em",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>⚡</span>
+          SKILLS
+        </button>
+        {/* LEGENDS tab */}
+        <button
+          type="button"
+          onClick={() => setScreen("legends")}
+          style={{
+            flex: 1,
+            background: screen === "legends" ? "rgba(63,174,90,0.15)" : "none",
+            border: "none",
+            borderTop:
+              screen === "legends"
+                ? "2px solid #3FAE5A"
+                : "2px solid transparent",
+            color: screen === "legends" ? "#3FAE5A" : "#4A545D",
+            fontFamily: "monospace",
+            fontWeight: 700,
+            fontSize: 9,
+            letterSpacing: "0.06em",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>🌟</span>
+          LEGENDS
+        </button>
+        {/* SAVE tab */}
+        <button
+          type="button"
+          onClick={() => setScreen("password")}
+          style={{
+            flex: 1,
+            background: screen === "password" ? "rgba(63,174,90,0.15)" : "none",
+            border: "none",
+            borderTop:
+              screen === "password"
+                ? "2px solid #3FAE5A"
+                : "2px solid transparent",
+            color: screen === "password" ? "#3FAE5A" : "#4A545D",
+            fontFamily: "monospace",
+            fontWeight: 700,
+            fontSize: 9,
+            letterSpacing: "0.06em",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>💾</span>
+          SAVE
+        </button>
+        {/* MORE tab (opens menu) */}
+        <button
+          type="button"
+          onClick={() => setMenuOpen(true)}
+          style={{
+            flex: 1,
+            background: "none",
+            border: "none",
+            borderTop: "2px solid transparent",
+            color: "#4A545D",
+            fontFamily: "monospace",
+            fontWeight: 700,
+            fontSize: 9,
+            letterSpacing: "0.06em",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>☰</span>
+          MORE
+        </button>
+      </div>
     </div>
   );
 }

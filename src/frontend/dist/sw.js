@@ -1,6 +1,6 @@
 // Pixel Gridiron Service Worker
 // Bump CACHE_VERSION every deploy to bust old caches
-const CACHE_VERSION = 'pixel-gridiron-v17';
+const CACHE_VERSION = 'pixel-gridiron-v20';
 const CACHE_NAME = CACHE_VERSION;
 
 self.addEventListener('install', (event) => {
@@ -23,38 +23,20 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
+  // Only cache GET requests for same-origin assets
   if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request).catch(() => caches.match(event.request))
-    );
-    return;
-  }
-  if (url.pathname.match(/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf)$/)) {
-    event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
-        cache.match(event.request).then((cached) => {
-          if (cached) return cached;
-          return fetch(event.request).then((response) => {
-            cache.put(event.request, response.clone());
-            return response;
-          });
-        })
-      )
-    );
-    return;
-  }
+
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (response.ok) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.match(event.request).then((cached) => {
+        const fetchPromise = fetch(event.request).then((response) => {
+          if (response.ok) cache.put(event.request, response.clone());
+          return response;
+        });
+        return cached || fetchPromise;
+      });
+    })
   );
 });

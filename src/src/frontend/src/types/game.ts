@@ -87,6 +87,7 @@ export interface GameState {
   // Player
   lane: number; // current display lane (0-4)
   targetLane: number;
+  fromLane: number; // fractional lane we are shifting FROM (handles mid-shift direction changes)
   laneT: number; // 0..1 lane shift progress
   jumpY: number; // pixels above ground
   jumpVY: number;
@@ -354,6 +355,7 @@ export function createGameState(p: PlayerProfile): GameState {
     speed: BASE_SPEED + p.skills.speed * 0.3,
     lane: 2,
     targetLane: 2,
+    fromLane: 2,
     laneT: 1,
     jumpY: 0,
     jumpVY: 0,

@@ -637,19 +637,84 @@ function drawPlayer(ctx: CanvasRenderingContext2D, gs: GameState) {
   const S = 1.6;
 
   ctx.save();
+
+  // ── Ground shadow ellipse ──────────────────────────────────────
+  const shadowY = PLAYER_Y + 2; // always on the ground regardless of jump
+  ctx.save();
+  ctx.globalAlpha = 0.38 * (1 - gs.jumpY / 120);
+  const sg = ctx.createRadialGradient(
+    px,
+    shadowY,
+    2,
+    px,
+    shadowY,
+    26 * S * 0.55,
+  );
+  sg.addColorStop(0, "rgba(0,0,0,0.7)");
+  sg.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = sg;
+  ctx.beginPath();
+  ctx.ellipse(px, shadowY, 26 * S * 0.55, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // ── Silhouette (dark shape drawn 1 frame behind, offset down) ─
+  ctx.save();
+  ctx.globalAlpha = 0.22;
+  ctx.filter = "blur(3px)";
+  // Draw silhouette as a dark clone offset slightly down and back
+  drawSilhouette(ctx, gs, px + 3, py + 5, S);
+  ctx.restore();
+
+  // ── Transparent glow wrap (aura around player body) ───────────
+  ctx.save();
+  const auraY = py - 28 * S;
+  const auraH = 58 * S;
+  const auraW = 22 * S;
+  const auraColor = gs.turboActive
+    ? "rgba(255,215,0,"
+    : gs.shieldActive
+      ? "rgba(46,123,214,"
+      : "rgba(255,255,255,";
+  const auraAlpha = gs.turboActive ? 0.18 : gs.shieldActive ? 0.14 : 0.07;
+  const ag = ctx.createRadialGradient(
+    px,
+    auraY + auraH * 0.4,
+    auraW * 0.2,
+    px,
+    auraY + auraH * 0.4,
+    auraW * 1.4,
+  );
+  ag.addColorStop(0, `${auraColor}${(auraAlpha * 1.5).toFixed(2)})`);
+  ag.addColorStop(0.6, `${auraColor}${auraAlpha.toFixed(2)})`);
+  ag.addColorStop(1, `${auraColor}0)`);
+  ctx.fillStyle = ag;
+  ctx.beginPath();
+  ctx.ellipse(
+    px,
+    auraY + auraH * 0.4,
+    auraW * 1.4,
+    auraH * 0.65,
+    0,
+    0,
+    Math.PI * 2,
+  );
+  ctx.fill();
+  ctx.restore();
+
   if (gs.shieldActive) {
     ctx.beginPath();
     ctx.arc(px, py - 20 * S, 30 * S, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(46,123,214,0.18)";
+    ctx.fillStyle = "rgba(46,123,214,0.10)";
     ctx.fill();
-    ctx.strokeStyle = "#2E7BD6";
-    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "rgba(46,123,214,0.55)";
+    ctx.lineWidth = 2;
     ctx.stroke();
   }
   if (gs.turboActive) {
     for (let i = 3; i >= 1; i--) {
       ctx.save();
-      ctx.globalAlpha = 0.12 - i * 0.03;
+      ctx.globalAlpha = 0.1 - i * 0.025;
       drawSprite(ctx, gs, px, py + i * 9, S, true);
       ctx.restore();
     }
@@ -679,6 +744,29 @@ function drawPlayer(ctx: CanvasRenderingContext2D, gs: GameState) {
     drawSprite(ctx, gs, px, py, S, false);
   }
   ctx.restore();
+}
+
+// Draws a solid dark silhouette in the shape of the player (no colors, just black fill)
+function drawSilhouette(
+  ctx: CanvasRenderingContext2D,
+  _gs: GameState,
+  x: number,
+  y: number,
+  S: number,
+) {
+  ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#000";
+  // Legs
+  ctx.fillRect(x - 7 * S, y - 14 * S, 7 * S, 14 * S);
+  ctx.fillRect(x, y - 14 * S, 7 * S, 14 * S);
+  // Pants + body
+  ctx.fillRect(x - 12 * S, y - 36 * S, 24 * S, 27 * S);
+  // Shoulder pads
+  ctx.fillRect(x - 20 * S, y - 38 * S, 40 * S, 7 * S);
+  // Helmet
+  ctx.beginPath();
+  ctx.arc(x, y - 45 * S, 13 * S, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawSprite(

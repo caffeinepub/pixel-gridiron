@@ -285,17 +285,31 @@ export default function App() {
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* ──────────────────────────────────────────────────────────────────
-          GAME LAYER — canvas always mounted, just hidden behind other tabs
-          ────────────────────────────────────────────────────────────────── */}
-      <GameCanvas
-        ref={canvasRef}
-        gameStateRef={gameStateRef}
-        onScoreUpdate={handleScoreUpdate}
-        onTackled={handleTackled}
-      />
+      {/* ─────────────────────────────────────────────────────────────────
+          LAYER 0 — Game screen zone (top 0 → bottom 250px)
+          All game rendering lives inside this hard-bounded zone.
+          ───────────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 250,
+          overflow: "hidden",
+        }}
+      >
+        <GameCanvas
+          ref={canvasRef}
+          gameStateRef={gameStateRef}
+          onScoreUpdate={handleScoreUpdate}
+          onTackled={handleTackled}
+        />
+      </div>
 
-      {/* ── HUD overlay — top bar (game tab only) ─────────────────────── */}
+      {/* ─────────────────────────────────────────────────────────────────
+          LAYER 1 — HUD overlay (same zone as game, pointer-events none)
+          ───────────────────────────────────────────────────────────────── */}
       {tab === "game" && (
         <div
           style={{
@@ -303,250 +317,283 @@ export default function App() {
             top: 0,
             left: 0,
             right: 0,
-            height: 48,
-            background: "rgba(0,0,0,0.65)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            padding: "0 8px",
-            gap: 8,
-            zIndex: 15,
+            bottom: 250,
             pointerEvents: "none",
-            borderBottom: "1px solid rgba(63,174,90,0.2)",
+            zIndex: 10,
           }}
         >
-          {/* HP bar */}
-          <div style={{ flex: 1 }}>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                marginBottom: 2,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 9,
-                  color: "#A9B0B6",
-                  fontFamily: "monospace",
-                  fontWeight: 700,
-                }}
-              >
-                HP
-              </span>
-              <span
-                style={{ fontSize: 9, color: hpColor, fontFamily: "monospace" }}
-              >
-                {hp}
-              </span>
-            </div>
-            <div
-              style={{
-                height: 5,
-                background: "rgba(255,255,255,0.1)",
-                borderRadius: 3,
-                overflow: "hidden",
-              }}
-            >
+          {/* ── Top stats bar ─────────────────────────────────────────── */}
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 48,
+              background: "rgba(0,0,0,0.65)",
+              backdropFilter: "blur(4px)",
+              display: "flex",
+              alignItems: "center",
+              padding: "0 8px",
+              gap: 8,
+              zIndex: 15,
+              pointerEvents: "none",
+              borderBottom: "1px solid rgba(63,174,90,0.2)",
+            }}
+          >
+            {/* HP bar */}
+            <div style={{ flex: 1 }}>
               <div
                 style={{
-                  width: `${hpPct}%`,
-                  height: "100%",
-                  borderRadius: 3,
-                  background: hpColor,
-                  transition: "width 0.15s",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: 2,
                 }}
-              />
+              >
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: "#A9B0B6",
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                  }}
+                >
+                  HP
+                </span>
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: hpColor,
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {hp}
+                </span>
+              </div>
+              <div
+                style={{
+                  height: 5,
+                  background: "rgba(255,255,255,0.1)",
+                  borderRadius: 3,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${hpPct}%`,
+                    height: "100%",
+                    borderRadius: 3,
+                    background: hpColor,
+                    transition: "width 0.15s",
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Score center */}
+            <div style={{ textAlign: "center", minWidth: 90 }}>
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 16,
+                  fontWeight: 700,
+                  color: "#3FAE5A",
+                  letterSpacing: "0.08em",
+                }}
+              >
+                {String(score).padStart(6, "0")}
+              </div>
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 8,
+                  color: "#4A545D",
+                }}
+              >
+                HI: {String(profile.highScore).padStart(6, "0")}
+              </div>
+            </div>
+
+            {/* XP bar */}
+            <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: 2,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: "#A9B0B6",
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                  }}
+                >
+                  XP
+                </span>
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: "#2E7BD6",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  Lv.{currentLevel}
+                </span>
+              </div>
+              <div
+                style={{
+                  height: 5,
+                  background: "rgba(255,255,255,0.1)",
+                  borderRadius: 3,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${xpPct}%`,
+                    height: "100%",
+                    borderRadius: 3,
+                    background: "#2E7BD6",
+                    transition: "width 0.15s",
+                  }}
+                />
+              </div>
             </div>
           </div>
 
-          {/* Score center */}
-          <div style={{ textAlign: "center", minWidth: 90 }}>
-            <div
-              style={{
-                fontFamily: "monospace",
-                fontSize: 16,
-                fontWeight: 700,
-                color: "#3FAE5A",
-                letterSpacing: "0.08em",
-              }}
-            >
-              {String(score).padStart(6, "0")}
-            </div>
-            <div
-              style={{ fontFamily: "monospace", fontSize: 8, color: "#4A545D" }}
-            >
-              HI: {String(profile.highScore).padStart(6, "0")}
-            </div>
-          </div>
+          {/* ── START / PAUSE button — top right ────────────────────────── */}
+          <button
+            type="button"
+            data-ocid="game.start.button"
+            style={{
+              ...btnBase,
+              pointerEvents: "auto",
+              top: 56,
+              right: 10,
+              width: 80,
+              height: 36,
+              background:
+                getGs().phase === "playing"
+                  ? "rgba(42,80,60,0.7)"
+                  : "rgba(63,174,90,0.85)",
+              borderRadius: 8,
+              border: `1px solid ${
+                getGs().phase === "playing" ? "rgba(63,174,90,0.4)" : "#60CF80"
+              }`,
+              color: "#FFF",
+              fontSize: 11,
+              letterSpacing: "0.08em",
+            }}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              handleStart();
+            }}
+          >
+            {getGs().phase === "playing"
+              ? "PAUSE"
+              : getGs().phase === "paused"
+                ? "RESUME"
+                : "START"}
+          </button>
 
-          {/* XP bar */}
-          <div style={{ flex: 1 }}>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                marginBottom: 2,
-              }}
-            >
-              <span
+          {/* ── Auth badge ────────────────────────────────────────────── */}
+          <div
+            style={{
+              position: "absolute",
+              pointerEvents: "auto",
+              top: 56,
+              left: 10,
+              zIndex: 20,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            {isLoggedIn ? (
+              <>
+                <Badge
+                  style={{
+                    fontSize: 10,
+                    background: "rgba(63,174,90,0.15)",
+                    borderColor: "rgba(63,174,90,0.4)",
+                    color: "#3FAE5A",
+                    cursor: "default",
+                  }}
+                >
+                  Lv.{profile.level} {profile.displayName || "Runner"}
+                </Badge>
+                <button
+                  type="button"
+                  data-ocid="game.logout.button"
+                  onClick={clear}
+                  style={{
+                    fontSize: 9,
+                    padding: "3px 8px",
+                    background: "rgba(0,0,0,0.5)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 6,
+                    color: "#6A7480",
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    letterSpacing: "0.06em",
+                  }}
+                >
+                  OUT
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                data-ocid="game.login.button"
+                onClick={login}
+                disabled={isLoggingIn}
                 style={{
-                  fontSize: 9,
-                  color: "#A9B0B6",
+                  fontSize: 10,
+                  padding: "5px 12px",
+                  background: "rgba(43,51,58,0.85)",
+                  border: "1px solid rgba(74,84,93,0.7)",
+                  borderRadius: 6,
+                  color: "#E7E7E7",
                   fontFamily: "monospace",
                   fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  cursor: "pointer",
                 }}
               >
-                XP
-              </span>
-              <span
-                style={{
-                  fontSize: 9,
-                  color: "#2E7BD6",
-                  fontFamily: "monospace",
-                }}
-              >
-                Lv.{currentLevel}
-              </span>
-            </div>
-            <div
-              style={{
-                height: 5,
-                background: "rgba(255,255,255,0.1)",
-                borderRadius: 3,
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  width: `${xpPct}%`,
-                  height: "100%",
-                  borderRadius: 3,
-                  background: "#2E7BD6",
-                  transition: "width 0.15s",
-                }}
-              />
-            </div>
+                {isLoggingIn ? "..." : "LOGIN"}
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* ── START / PAUSE button — top right (game tab only) ────────────── */}
-      {tab === "game" && (
-        <button
-          type="button"
-          data-ocid="game.start.button"
-          style={{
-            ...btnBase,
-            top: 56,
-            right: 10,
-            width: 80,
-            height: 36,
-            background:
-              getGs().phase === "playing"
-                ? "rgba(42,80,60,0.7)"
-                : "rgba(63,174,90,0.85)",
-            borderRadius: 8,
-            border: `1px solid ${
-              getGs().phase === "playing" ? "rgba(63,174,90,0.4)" : "#60CF80"
-            }`,
-            color: "#FFF",
-            fontSize: 11,
-            letterSpacing: "0.08em",
-          }}
-          onPointerDown={(e) => {
-            e.preventDefault();
-            handleStart();
-          }}
-        >
-          {getGs().phase === "playing"
-            ? "PAUSE"
-            : getGs().phase === "paused"
-              ? "RESUME"
-              : "START"}
-        </button>
-      )}
-
-      {/* ── Auth badge (game tab, top-left below HUD) ───────────────────── */}
+      {/* ─────────────────────────────────────────────────────────────────
+          LAYER 4 — Controls zone (bottom 52px → bottom 250px)
+          Height = 198px, lives above tab bar.
+          ───────────────────────────────────────────────────────────────── */}
       {tab === "game" && (
         <div
           style={{
             position: "absolute",
-            top: 56,
-            left: 10,
+            bottom: 52,
+            left: 0,
+            right: 0,
+            height: 198,
             zIndex: 20,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
+            pointerEvents: "none",
           }}
         >
-          {isLoggedIn ? (
-            <>
-              <Badge
-                style={{
-                  fontSize: 10,
-                  background: "rgba(63,174,90,0.15)",
-                  borderColor: "rgba(63,174,90,0.4)",
-                  color: "#3FAE5A",
-                  cursor: "default",
-                }}
-              >
-                Lv.{profile.level} {profile.displayName || "Runner"}
-              </Badge>
-              <button
-                type="button"
-                data-ocid="game.logout.button"
-                onClick={clear}
-                style={{
-                  fontSize: 9,
-                  padding: "3px 8px",
-                  background: "rgba(0,0,0,0.5)",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  borderRadius: 6,
-                  color: "#6A7480",
-                  fontFamily: "monospace",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  letterSpacing: "0.06em",
-                }}
-              >
-                OUT
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              data-ocid="game.login.button"
-              onClick={login}
-              disabled={isLoggingIn}
-              style={{
-                fontSize: 10,
-                padding: "5px 12px",
-                background: "rgba(43,51,58,0.85)",
-                border: "1px solid rgba(74,84,93,0.7)",
-                borderRadius: 6,
-                color: "#E7E7E7",
-                fontFamily: "monospace",
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                cursor: "pointer",
-              }}
-            >
-              {isLoggingIn ? "..." : "LOGIN"}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* ── Touch controls (game tab only) — bottom offset by tab bar ──── */}
-      {tab === "game" && (
-        <>
           {/* LEFT arrow */}
           <button
             type="button"
             style={{
+              pointerEvents: "auto",
               ...btnBase,
-              bottom: TAB_BAR_H + 20,
+              bottom: 20,
               left: 12,
               width: 88,
               height: 68,
@@ -568,7 +615,7 @@ export default function App() {
             type="button"
             style={{
               ...btnBase,
-              bottom: TAB_BAR_H + 20,
+              bottom: 20,
               left: 112,
               width: 88,
               height: 68,
@@ -590,7 +637,7 @@ export default function App() {
             type="button"
             style={{
               ...btnBase,
-              bottom: TAB_BAR_H + 100,
+              bottom: 100,
               right: 92,
               width: 72,
               height: 52,
@@ -616,7 +663,7 @@ export default function App() {
             type="button"
             style={{
               ...btnBase,
-              bottom: TAB_BAR_H + 100,
+              bottom: 100,
               right: 12,
               width: 72,
               height: 52,
@@ -644,7 +691,7 @@ export default function App() {
             type="button"
             style={{
               ...btnBase,
-              bottom: TAB_BAR_H + 24,
+              bottom: 24,
               right: 40,
               width: 96,
               height: 60,
@@ -661,7 +708,7 @@ export default function App() {
           >
             HURDLE
           </button>
-        </>
+        </div>
       )}
 
       {/* ── Non-game tab panels ───────────────────────────────────────────── */}
@@ -670,13 +717,16 @@ export default function App() {
           data-scroll="true"
           style={{
             position: "absolute",
-            inset: 0,
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 250,
             background: "rgba(10,12,15,0.98)",
             zIndex: 40,
             overflowY: "auto",
             WebkitOverflowScrolling:
               "touch" as React.CSSProperties["WebkitOverflowScrolling"],
-            paddingBottom: TAB_BAR_H + 8,
+            paddingBottom: 16,
           }}
         >
           {/* Top bar with title + auth */}
@@ -802,7 +852,10 @@ export default function App() {
           data-ocid="play_result.panel"
           style={{
             position: "absolute",
-            inset: 0,
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 250,
             background: "rgba(0,0,0,0.92)",
             zIndex: 60,
             display: "flex",
@@ -810,7 +863,8 @@ export default function App() {
             alignItems: "center",
             justifyContent: "center",
             gap: 16,
-            paddingBottom: TAB_BAR_H,
+            paddingBottom: 0,
+            overflowY: "auto",
           }}
         >
           <div

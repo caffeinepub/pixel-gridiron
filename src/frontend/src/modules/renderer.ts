@@ -1,1025 +1,837 @@
 /**
- * renderer.ts — SNES-style PPU layered draw pipeline.
- * Layers: sky → horizon scenery → ground (Mode-7) → lane dividers →
- *         endzone stripe → obstacles → player → floats → coach → flash → scanlines → screens
- *
- * PERSPECTIVE: LANE_HOR is now wide (60..300 = 240px span at horizon)
- * vs LANE_BOT (28..332 = 304px at bottom). This gives a real rear-view
- * camera feel instead of the old near-top-down look.
+ * renderer.ts — Three.js 3D scene manager.
+ * Replaces the Canvas 2D PPU pipeline with a real 3D scene:
+ *   - PerspectiveCamera behind & above player (3rd person rear view)
+ *   - Humanoid player mesh with stride animation
+ *   - Humanoid defender meshes (proportions vary by type)
+ *   - Crate BoxGeometry + EdgesGeometry
+ *   - Emoji power-up spheres with billboard sprites
+ *   - Scrolling grass texture for movement illusion
+ *   - HTML overlays handle HUD / screens (not drawn here)
  */
+import * as THREE from "three";
 import {
   BREAK_DUR,
-  CH,
-  CW,
   type CareerStage,
   DEFENDER_STATS,
-  GROUND_Y,
   type GameState,
-  HORIZON_Y,
-  LANE_BOT,
-  LANE_HOR,
   LEGENDARY_PLAYERS,
-  type Obstacle,
-  PLAYER_Y,
   SPAWN_Z,
   STAGE_NAMES,
-  VANISH_X,
 } from "../types/game";
-import { laneX, playerScreenX } from "./movement";
 
-// ---------------------------------------------------------------------------
-// Projection: worldZ=0 → player screen pos, worldZ=SPAWN_Z → horizon
-// ---------------------------------------------------------------------------
-function proj(worldZ: number, lane: number) {
-  const t = Math.min(1, Math.max(0, worldZ / SPAWN_Z));
-  const y = PLAYER_Y - (PLAYER_Y - HORIZON_Y) * t;
-  const bx = LANE_BOT[lane]!;
-  const hx = LANE_HOR[lane]!;
-  const x = bx + (hx - bx) * t;
-  // Scale: 1.0 at player feet, shrinks to 0.10 at horizon
-  const scale = 1 - t * 0.9;
-  return { x, y, scale };
+// ── Lane mapping: game lanes 0-4 → world X positions ────────────────────────
+const LANE_WORLD_X = [-4, -2, 0, 2, 4] as const;
+
+function laneWorldX(lane: number): number {
+  return LANE_WORLD_X[lane] ?? 0;
 }
 
-export function drawFrame(ctx: CanvasRenderingContext2D, gs: GameState): void {
-  ctx.clearRect(0, 0, CW, CH);
-
-  // Layer 0: sky
-  drawSky(ctx, gs);
-  // Layer 1: horizon scenery
-  drawHorizon(ctx, gs);
-  // Layer 2: ground + Mode-7 stripes
-  drawGround(ctx, gs);
-  // Layer 3: lane dividers
-  drawLanes(ctx, gs);
-  // Layer 3.5: endzone overlay (if close)
-  drawEndzoneApproach(ctx, gs);
-  // Layer 4: obstacles (sorted back→front)
-  drawObstacles(ctx, gs);
-  // Layer 5: player
-  drawPlayer(ctx, gs);
-  // Layer 6: floating text
-  drawFloats(ctx, gs);
-  // Layer 7: coach tutorial
-  if (gs.tutActive) drawCoach(ctx, gs);
-
-  // Hurt flash overlay
-  if (gs.hurtFlash > 0) {
-    ctx.save();
-    ctx.fillStyle = `rgba(198,58,58,${Math.min(0.55, gs.hurtFlash * 1.4).toFixed(2)})`;
-    ctx.fillRect(0, 0, CW, CH);
-    ctx.restore();
-  }
-
-  // SNES scanlines
-  ctx.save();
-  ctx.globalAlpha = 0.035;
-  ctx.fillStyle = "#000";
-  for (let y = 0; y < CH; y += 3) ctx.fillRect(0, y, CW, 1);
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  // Overlay screens
-  if (gs.phase === "idle") drawIdleScreen(ctx, gs);
-  if (gs.phase === "paused") drawPauseScreen(ctx, gs);
-  if (gs.phase === "tackled") drawTackleScreen(ctx, gs);
-
-  // HUD always during / after play
-  if (gs.phase === "playing" || gs.phase === "tackled") drawHUD(ctx, gs);
+// Map worldZ (0=player, SPAWN_Z=far) to Three.js Z (0=player, 24=far)
+function worldZToSceneZ(worldZ: number): number {
+  return (worldZ / SPAWN_Z) * 24;
 }
 
-// ---------------------------------------------------------------------------
-// PPU LAYER 0: SKY
-// ---------------------------------------------------------------------------
-function drawSky(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const g = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
-  const skies: Record<CareerStage, string[]> = {
-    HighSchool: ["#5BA3DC", "#87CEEB"],
-    College: ["#1a0a00", "#FF6B1A", "#FFB347"],
-    Pro: ["#02020F", "#0a0a25"],
-    SuperBowl: ["#08001A", "#1a052e"],
-    HallOfFame: ["#1a0030", "#5C2A00", "#1a0010"],
-  };
-  const cols = skies[gs.careerStage];
-  if (cols.length === 2) {
-    g.addColorStop(0, cols[0]!);
-    g.addColorStop(1, cols[1]!);
-  } else {
-    g.addColorStop(0, cols[0]!);
-    g.addColorStop(0.5, cols[1]!);
-    g.addColorStop(1, cols[2]!);
+// ── Sky colors per career stage ──────────────────────────────────────────────
+const SKY_COLORS: Record<CareerStage, number> = {
+  HighSchool: 0x5ba3dc,
+  College: 0x1a0800,
+  Pro: 0x02020f,
+  SuperBowl: 0x08001a,
+  HallOfFame: 0x1a0030,
+};
+
+const GROUND_SKY: Record<CareerStage, number> = {
+  HighSchool: 0x3a9a2a,
+  College: 0x2a7a20,
+  Pro: 0x143a18,
+  SuperBowl: 0x1a5028,
+  HallOfFame: 0x1e4028,
+};
+
+// ── Jersey colors per career stage ──────────────────────────────────────────
+const DEFENDER_JERSEY: Record<
+  CareerStage,
+  { body: number; helmet: number; accent: number }
+> = {
+  HighSchool: { body: 0xf0f0f0, helmet: 0xcccccc, accent: 0x333333 },
+  College: { body: 0x1565c0, helmet: 0x0d47a1, accent: 0xffd700 },
+  Pro: { body: 0x2d2d2d, helmet: 0x1a1a1a, accent: 0xc0c0c0 },
+  SuperBowl: { body: 0x0a0a0a, helmet: 0xb8860b, accent: 0xffd700 },
+  HallOfFame: { body: 0x1a1a1a, helmet: 0xdaa520, accent: 0xffd700 },
+};
+
+// ── Emoji orb colors ─────────────────────────────────────────────────────────
+const EMOJI_COLORS: Record<string, number> = {
+  "⚡": 0xffd700,
+  "💥": 0xff4500,
+  "💢": 0xff6b35,
+  "🏈": 0x3fae5a,
+  "🔥": 0xff6347,
+  "🌟": 0xffd700,
+};
+
+// ── Build scrolling grass texture ────────────────────────────────────────────
+function buildGrassTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const c = document.createElement("canvas");
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext("2d")!;
+
+  // Dark green base
+  ctx.fillStyle = "#2a7a20";
+  ctx.fillRect(0, 0, size, size);
+
+  // Alternating lighter turf strips
+  for (let i = 0; i < 10; i++) {
+    const y = (i / 10) * size;
+    const h = size / 20;
+    ctx.fillStyle = i % 2 === 0 ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.07)";
+    ctx.fillRect(0, y, size, h);
   }
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, CW, HORIZON_Y);
 
-  if (gs.careerStage === "HighSchool") {
-    // Sun
-    const sg = ctx.createRadialGradient(VANISH_X, 30, 4, VANISH_X, 30, 26);
-    sg.addColorStop(0, "#FFF176");
-    sg.addColorStop(0.5, "#FFD700");
-    sg.addColorStop(1, "rgba(255,215,0,0)");
-    ctx.fillStyle = sg;
-    ctx.fillRect(VANISH_X - 30, 4, 60, 56);
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
-    for (const [cx, cy, cr] of [
-      [100, 22, 14],
-      [118, 16, 18],
-      [136, 22, 13],
-      [220, 30, 12],
-      [238, 24, 16],
-      [254, 30, 11],
-    ] as number[][]) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, cr, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else {
-    // Stars
-    ctx.save();
-    for (const [sx, sy] of [
-      [20, 10],
-      [55, 18],
-      [100, 8],
-      [145, 22],
-      [195, 12],
-      [240, 20],
-      [290, 7],
-      [330, 15],
-      [60, 35],
-      [160, 32],
-      [280, 28],
-      [350, 40],
-    ] as number[][]) {
-      const tw = 0.5 + 0.5 * Math.sin(gs.frame * 0.04 + sx! * 0.1);
-      ctx.fillStyle = `rgba(255,255,255,${(0.4 + tw * 0.5).toFixed(2)})`;
-      ctx.fillRect(sx!, sy!, 2, 2);
-    }
-    ctx.restore();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PPU LAYER 1: HORIZON SCENERY
-// ---------------------------------------------------------------------------
-function drawHorizon(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const glows: Record<CareerStage, string> = {
-    HighSchool: "rgba(120,200,60,0.5)",
-    College: "rgba(255,160,40,0.6)",
-    Pro: "rgba(60,120,255,0.5)",
-    SuperBowl: "rgba(255,215,0,0.7)",
-    HallOfFame: "rgba(255,140,40,0.8)",
-  };
-  const hg = ctx.createLinearGradient(0, HORIZON_Y - 10, 0, HORIZON_Y + 16);
-  hg.addColorStop(0, "rgba(0,0,0,0)");
-  hg.addColorStop(0.5, glows[gs.careerStage]);
-  hg.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = hg;
-  ctx.fillRect(0, HORIZON_Y - 10, CW, 26);
-
-  const stage = gs.careerStage;
-  if (stage === "HighSchool") {
-    const cc = ["#E53935", "#1565C0", "#F9A825", "#2E7D32", "#6A1B9A", "#FFF"];
-    for (let x = 0; x < CW; x += 5) {
-      ctx.fillStyle = cc[Math.floor(x / 5) % cc.length]!;
-      ctx.fillRect(x, HORIZON_Y - 14, 4, 8);
-      ctx.fillStyle = "#FFCCBC";
-      ctx.fillRect(x + 1, HORIZON_Y - 20, 3, 6);
-    }
-    ctx.fillStyle = "#111";
-    ctx.fillRect(VANISH_X - 55, 4, 110, 28);
-    ctx.fillStyle = "#FFD700";
-    ctx.font = "bold 8px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText("HOME 0  AWAY 0  Q1", VANISH_X, 15);
-    ctx.fillText(
-      (gs.teamName || "PIXEL FC").toUpperCase().slice(0, 12),
-      VANISH_X,
-      27,
-    );
-  } else if (stage === "College") {
-    const cc = ["#E53935", "#1565C0", "#F9A825", "#2E7D32", "#FFF"];
-    for (let x = 0; x < CW; x += 4) {
-      const row = Math.floor(x / 4) % 2;
-      ctx.fillStyle = cc[Math.floor(x / 4) % cc.length]!;
-      ctx.fillRect(x, HORIZON_Y - 16 + row * 6, 3, 6);
-      ctx.fillStyle = "#FFCCBC";
-      ctx.fillRect(x, HORIZON_Y - 20 + row * 6, 3, 4);
-    }
-    for (const lx of [40, 160, 200, 320]) {
-      ctx.fillStyle = "#888";
-      ctx.fillRect(lx - 2, HORIZON_Y - 50, 4, 50);
-      ctx.fillStyle = "rgba(255,240,180,0.95)";
-      ctx.beginPath();
-      ctx.arc(lx, HORIZON_Y - 50, 7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (stage === "Pro") {
-    const bldgs = [
-      { x: 0, w: 28, h: 55 },
-      { x: 30, w: 20, h: 75 },
-      { x: 52, w: 32, h: 45 },
-      { x: 86, w: 16, h: 90 },
-      { x: 104, w: 24, h: 62 },
-      { x: 130, w: 14, h: 80 },
-      { x: 146, w: 28, h: 58 },
-      { x: 176, w: 22, h: 74 },
-      { x: 200, w: 18, h: 50 },
-      { x: 220, w: 28, h: 85 },
-      { x: 250, w: 16, h: 68 },
-      { x: 268, w: 24, h: 55 },
-      { x: 294, w: 20, h: 78 },
-      { x: 316, w: 24, h: 60 },
-      { x: 340, w: 20, h: 72 },
-    ];
-    for (const b of bldgs) {
-      ctx.fillStyle = "#080810";
-      ctx.fillRect(b.x, HORIZON_Y - b.h, b.w, b.h);
-      for (let wy = HORIZON_Y - b.h + 5; wy < HORIZON_Y - 5; wy += 8) {
-        for (let wx = b.x + 3; wx < b.x + b.w - 3; wx += 6) {
-          if (Math.random() > 0.6) {
-            ctx.fillStyle = `rgba(255,240,${Math.floor(Math.random() * 100 + 80)},0.7)`;
-            ctx.fillRect(wx, wy, 3, 5);
-          }
-        }
-      }
-    }
-  } else if (stage === "SuperBowl") {
-    const sc = ["#FFD700", "#C63A3A", "#2E7BD6", "#3FAE5A", "#FFF", "#FF69B4"];
-    for (let row = 0; row < 5; row++)
-      for (let x = 0; x < CW; x += 4) {
-        ctx.fillStyle = sc[(x + row * 9) % sc.length]!;
-        ctx.fillRect(x, HORIZON_Y - 24 + row * 5, 3, 5);
-        ctx.fillStyle = "#FFCCBC";
-        ctx.fillRect(x, HORIZON_Y - 28 + row * 5, 3, 4);
-      }
-    ctx.fillStyle = "rgba(0,0,0,0.75)";
-    ctx.fillRect(VANISH_X - 90, 4, 180, 24);
-    ctx.fillStyle = "#FFD700";
-    ctx.font = "bold 11px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText("* SUPER BOWL *", VANISH_X, 20);
-  } else {
-    ctx.fillStyle = "#0a0515";
-    ctx.fillRect(VANISH_X - 70, HORIZON_Y - 65, 140, 65);
-    ctx.fillStyle = "#7B3F00";
-    ctx.fillRect(VANISH_X - 50, HORIZON_Y - 80, 100, 20);
-    ctx.fillStyle = "#FFD700";
-    ctx.font = "bold 8px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText("HALL OF FAME", VANISH_X, HORIZON_Y - 68);
-    for (let i = 0; i < 10; i++) {
-      const bx = 18 + i * 33;
-      const wave = Math.sin(gs.frame * 0.06 + i * 0.7) * 4;
-      ctx.fillStyle = i % 2 === 0 ? "#FFD700" : "#C5A028";
-      ctx.fillRect(bx, HORIZON_Y - 35 + wave, 6, 30);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PPU LAYER 2: GROUND (Mode-7 perspective stripes)
-// ---------------------------------------------------------------------------
-function drawGround(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const palettes: Record<CareerStage, [string, string, string, string]> = {
-    HighSchool: ["#3A9A2A", "#2E7D32", "#226018", "#1B5E20"],
-    College: ["#2A7A20", "#1f6018", "#154810", "#0f3d0a"],
-    Pro: ["#143A18", "#0f2e12", "#09200c", "#051508"],
-    SuperBowl: ["#1A5028", "#133d1e", "#0d2e16", "#09200f"],
-    HallOfFame: ["#1E4028", "#16301e", "#0f2415", "#09180d"],
-  };
-  const [c1, c2, c3, c4] = palettes[gs.careerStage];
-  const gg = ctx.createLinearGradient(0, HORIZON_Y, 0, GROUND_Y);
-  gg.addColorStop(0, c1!);
-  gg.addColorStop(0.35, c2!);
-  gg.addColorStop(0.7, c3!);
-  gg.addColorStop(1, c4!);
-  ctx.fillStyle = gg;
-  ctx.fillRect(0, HORIZON_Y, CW, GROUND_Y - HORIZON_Y);
-
-  // Mode-7 alternating turf stripes (perspective-correct trapezoids)
-  ctx.save();
-  for (let i = 0; i < 20; i++) {
-    const d = (i / 20 + gs.fieldScroll) % 1.0;
-    const nd = ((i + 1) / 20 + gs.fieldScroll) % 1.0;
-    const y1 = HORIZON_Y + (GROUND_Y - HORIZON_Y) * (1 - d);
-    const y2 = HORIZON_Y + (GROUND_Y - HORIZON_Y) * (1 - nd);
-    const top = Math.min(y1, y2);
-    const bot = Math.max(y1, y2);
-    if (bot < HORIZON_Y) continue;
-    const t = 1 - d;
-    ctx.fillStyle = i % 2 === 0 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.05)";
-    ctx.fillRect(VANISH_X - VANISH_X * t, top, CW * t, Math.max(1, bot - top));
-  }
-  ctx.restore();
-
-  // Yard lines — perspective-correct horizontal stripes
-  ctx.save();
-  ctx.strokeStyle =
-    gs.careerStage === "HallOfFame"
-      ? "rgba(255,200,0,0.5)"
-      : "rgba(255,255,255,0.38)";
-  for (let i = 0; i < 12; i++) {
-    const raw = (i / 12 + gs.fieldScroll * 1.4) % 1.0;
-    const d = raw * raw;
-    const y = HORIZON_Y + (GROUND_Y - HORIZON_Y) * (1 - d);
-    if (y <= HORIZON_Y + 2 || y > GROUND_Y) continue;
-    const t = 1 - d;
-    // Use LANE_HOR[0]/[4] as left/right edges at horizon for authentic perspective
-    const leftEdge = LANE_HOR[0]! + (LANE_BOT[0]! - LANE_HOR[0]!) * (1 - t);
-    const rightEdge = LANE_HOR[4]! + (LANE_BOT[4]! - LANE_HOR[4]!) * (1 - t);
-    ctx.lineWidth = Math.max(0.5, 2 * (1 - raw));
-    ctx.globalAlpha = 0.2 + d * 0.5;
+  // Yard hash marks (horizontal white lines every ~50px)
+  ctx.strokeStyle = "rgba(255,255,255,0.6)";
+  ctx.lineWidth = 3;
+  for (let y = 0; y < size; y += 51) {
     ctx.beginPath();
-    ctx.moveTo(leftEdge - 4, y);
-    ctx.lineTo(rightEdge + 4, y);
+    ctx.moveTo(0, y);
+    ctx.lineTo(size, y);
     ctx.stroke();
   }
-  ctx.globalAlpha = 1;
-  ctx.restore();
 
-  // SuperBowl confetti on ground
-  if (gs.careerStage === "SuperBowl") {
-    const cc = ["#FFD700", "#C63A3A", "#2E7BD6", "#3FAE5A", "#FF69B4"];
-    ctx.save();
-    for (let i = 0; i < 18; i++) {
-      ctx.fillStyle = cc[i % cc.length]!;
-      ctx.fillRect(
-        (i * 22 + gs.frame * 0.9) % CW,
-        HORIZON_Y + ((gs.frame * (0.5 + i * 0.08)) % (GROUND_Y - HORIZON_Y)),
-        5,
-        5,
-      );
-    }
-    ctx.restore();
-  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 8);
+  return tex;
 }
 
-// ---------------------------------------------------------------------------
-// PPU LAYER 3: LANE DIVIDERS
-// The LANE_HOR/LANE_BOT values define 5 lane centers.
-// We draw 6 divider lines between and outside them.
-// ---------------------------------------------------------------------------
-function drawLanes(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const col =
-    gs.careerStage === "HallOfFame"
-      ? "rgba(255,200,0,0.65)"
-      : gs.careerStage === "HighSchool"
-        ? "rgba(255,255,255,0.65)"
-        : "rgba(255,255,255,0.38)";
-
-  // Build 6 edge positions from 5 lane centers
-  const halfBot = (LANE_BOT[1]! - LANE_BOT[0]!) / 2;
-  const halfHor = (LANE_HOR[1]! - LANE_HOR[0]!) / 2;
-  const bEdge: number[] = [
-    LANE_BOT[0]! - halfBot,
-    (LANE_BOT[0]! + LANE_BOT[1]!) / 2,
-    (LANE_BOT[1]! + LANE_BOT[2]!) / 2,
-    (LANE_BOT[2]! + LANE_BOT[3]!) / 2,
-    (LANE_BOT[3]! + LANE_BOT[4]!) / 2,
-    LANE_BOT[4]! + halfBot,
-  ];
-  const hEdge: number[] = [
-    LANE_HOR[0]! - halfHor,
-    (LANE_HOR[0]! + LANE_HOR[1]!) / 2,
-    (LANE_HOR[1]! + LANE_HOR[2]!) / 2,
-    (LANE_HOR[2]! + LANE_HOR[3]!) / 2,
-    (LANE_HOR[3]! + LANE_HOR[4]!) / 2,
-    LANE_HOR[4]! + halfHor,
-  ];
-
-  ctx.save();
-  ctx.strokeStyle = col;
-  for (let i = 0; i <= 5; i++) {
-    ctx.lineWidth = i === 0 || i === 5 ? 2.5 : 1.5;
-    ctx.globalAlpha = i === 0 || i === 5 ? 0.85 : 0.5;
-    ctx.beginPath();
-    ctx.moveTo(hEdge[i]!, HORIZON_Y);
-    ctx.lineTo(bEdge[i]!, GROUND_Y);
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// PPU LAYER 3.5: ENDZONE APPROACH TINT
-// When the player is close to the endzone rows, flash a gold glow on the field.
-// ---------------------------------------------------------------------------
-function drawEndzoneApproach(ctx: CanvasRenderingContext2D, gs: GameState) {
-  if (!gs.touchdown) return;
-  // After touchdown fires, flash the whole field gold
-  const pulse = 0.3 + 0.2 * Math.sin(gs.frame * 0.2);
-  ctx.save();
-  ctx.globalAlpha = pulse;
-  ctx.fillStyle = "rgba(255,215,0,0.35)";
-  ctx.fillRect(0, HORIZON_Y, CW, GROUND_Y - HORIZON_Y);
-  // ENDZONE painted letters
-  ctx.globalAlpha = 0.7;
-  ctx.fillStyle = "#FFD700";
-  ctx.font = "bold 32px monospace";
-  ctx.textAlign = "center";
-  ctx.fillText("END ZONE", CW / 2, (HORIZON_Y + GROUND_Y) / 2 - 10);
-  ctx.globalAlpha = 1;
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// PPU LAYER 4: OBSTACLES (sorted back→front by worldZ)
-// ---------------------------------------------------------------------------
-function drawObstacles(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const sorted = [...gs.obstacles].sort((a, b) => b.worldZ - a.worldZ);
-  for (const obs of sorted) {
-    if (obs.worldZ > SPAWN_Z + 2 || obs.worldZ < -2) continue;
-    const { x, y, scale } = proj(obs.worldZ, obs.lane);
-    if (y < HORIZON_Y) continue;
-    if (obs.broken && obs.breakTimer > 0) {
-      drawBreak(ctx, x, y, scale, obs);
-      continue;
-    }
-    if (obs.broken) continue;
-    if (obs.emojiPowerUp) drawEmoji(ctx, x, y, scale, obs, gs.frame);
-    else if (obs.type === "crate")
-      drawCrate(ctx, x, y, scale, gs.careerStage, !!obs.powerUp);
-    else
-      drawDefender(
-        ctx,
-        x,
-        y,
-        scale,
-        gs.careerStage,
-        obs.defenderType,
-        gs.frame,
-      );
-  }
-}
-
-function drawBreak(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  scale: number,
-  obs: Obstacle,
-) {
-  const frac = obs.breakTimer / BREAK_DUR;
-  ctx.save();
-  ctx.globalAlpha = frac;
-  for (let p = 0; p < 8; p++) {
-    const a = (p / 8) * Math.PI * 2;
-    const d = (1 - frac) * 28 * scale;
-    ctx.fillStyle = obs.type === "crate" ? "#8B4513" : "#E05050";
-    const sz = Math.max(3, 6 * scale);
-    ctx.fillRect(
-      x + Math.cos(a) * d - sz / 2,
-      y + Math.sin(a) * d - sz / 2,
-      sz,
-      sz,
-    );
-  }
-  ctx.restore();
-}
-
-function drawEmoji(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  scale: number,
-  obs: Obstacle,
-  frame: number,
-) {
-  const ep = obs.emojiPowerUp!;
-  const r = Math.max(12, 26 * scale);
-  const bob = Math.sin(frame * 0.08) * 4 * scale;
-  ctx.save();
-  const rg = ctx.createRadialGradient(
-    x,
-    y + bob - r,
-    r * 0.2,
-    x,
-    y + bob - r,
-    r * 1.3,
-  );
-  rg.addColorStop(0, `${ep.color}55`);
-  rg.addColorStop(1, `${ep.color}00`);
-  ctx.fillStyle = rg;
-  ctx.fillRect(x - r * 1.6, y + bob - r * 2.6, r * 3.2, r * 3.2);
-  ctx.beginPath();
-  ctx.arc(x, y + bob - r, r, 0, Math.PI * 2);
-  ctx.strokeStyle = ep.color;
-  ctx.lineWidth = Math.max(1.5, 2.5 * scale);
-  ctx.stroke();
-  ctx.font = `${Math.max(12, Math.round(20 * scale))}px serif`;
+// ── Build endzone texture ─────────────────────────────────────────────────────
+function buildEndzoneTexture(): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 128;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#b8860b";
+  ctx.fillRect(0, 0, 256, 128);
+  ctx.fillStyle = "rgba(255,215,0,0.9)";
+  ctx.font = "bold 32px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(ep.emoji, x, y + bob - r);
-  ctx.textBaseline = "alphabetic";
-  ctx.restore();
+  ctx.fillText("END ZONE", 128, 64);
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
 }
 
-function drawCrate(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  scale: number,
-  stage: CareerStage,
-  hasPow: boolean,
-) {
-  // Larger crates — minimum 28px, scale up to 60px
-  const w = Math.max(28, 60 * scale);
-  const h = w * 1.05;
-  const mc: Record<CareerStage, string> = {
-    HighSchool: "#8B4513",
-    College: "#9B2020",
-    Pro: "#2D2D2D",
-    SuperBowl: "#B8860B",
-    HallOfFame: "#DAA520",
-  };
-  ctx.save();
-  // Drop shadow
-  ctx.fillStyle = "rgba(0,0,0,0.4)";
-  ctx.fillRect(x - w / 2 + 5, y - h + 6, w, h);
-  // Main body
-  ctx.fillStyle = mc[stage];
-  ctx.fillRect(x - w / 2, y - h, w, h);
-  // Top highlight
-  ctx.fillStyle = "rgba(255,255,255,0.25)";
-  ctx.fillRect(x - w / 2, y - h, w, 4);
-  // Right shadow
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fillRect(x + w / 2 - 4, y - h, 4, h);
-  // Bottom shadow
-  ctx.fillRect(x - w / 2, y - 4, w, 4);
-  // Wooden cross slats
-  ctx.strokeStyle = "rgba(0,0,0,0.45)";
-  ctx.lineWidth = Math.max(1.5, 2 * scale);
-  ctx.beginPath();
-  ctx.moveTo(x - w / 2, y - h);
-  ctx.lineTo(x + w / 2, y);
-  ctx.moveTo(x + w / 2, y - h);
-  ctx.lineTo(x - w / 2, y);
-  ctx.stroke();
-  // Center vertical band
-  ctx.fillStyle = "rgba(0,0,0,0.15)";
-  ctx.fillRect(x - 3, y - h, 6, h);
-  // Power glow
-  if (hasPow) {
-    const pg = ctx.createRadialGradient(x, y - h / 2, 2, x, y - h / 2, w / 2);
-    pg.addColorStop(0, "rgba(255,215,0,0.65)");
-    pg.addColorStop(1, "rgba(255,215,0,0)");
-    ctx.fillStyle = pg;
-    ctx.fillRect(x - w / 2, y - h, w, h);
-  }
-  if (stage === "HallOfFame" || stage === "SuperBowl") {
-    ctx.strokeStyle = "#FFD700";
-    ctx.lineWidth = Math.max(1.5, 2 * scale);
-    ctx.strokeRect(x - w / 2 + 1, y - h + 1, w - 2, h - 2);
-  }
-  ctx.restore();
+// ── Build emoji billboard canvas texture ─────────────────────────────────────
+function buildEmojiTex(emoji: string): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 64;
+  const ctx = c.getContext("2d")!;
+  ctx.font = "48px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, 32, 36);
+  return new THREE.CanvasTexture(c);
 }
 
-function drawDefender(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  scale: number,
-  stage: CareerStage,
-  dType?: string,
-  frame = 0,
-) {
-  const jerseys: Record<CareerStage, [string, string, string]> = {
-    HighSchool: ["#f0f0f0", "#cccccc", "#333333"],
-    College: ["#1565C0", "#0D47A1", "#FFD700"],
-    Pro: ["#2D2D2D", "#1a1a1a", "#C0C0C0"],
-    SuperBowl: ["#0a0a0a", "#B8860B", "#FFD700"],
-    HallOfFame: ["#1a1a1a", "#DAA520", "#FFD700"],
-  };
-  const [jc, hc, ac] = jerseys[stage];
-  let wm = 1.0;
-  let hm = 1.0;
-  if (dType === "dt") {
-    wm = 1.4;
-    hm = 0.85;
-  } else if (dType === "cb" || dType === "s") {
-    wm = 0.85;
-    hm = 1.15;
-  }
-  const bW = 44 * scale * wm;
-  const bH = 62 * scale * hm;
-  if (bW < 4) return;
-  ctx.save();
-  if (stage === "HallOfFame") {
-    ctx.shadowColor = "#FFD700";
-    ctx.shadowBlur = 8 * scale;
-  }
-  // Shadow
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
-  ctx.beginPath();
-  ctx.ellipse(x, y + 2, bW * 0.55, bH * 0.08, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Stride legs
-  const sw = Math.sin(frame * 0.18) * bW * 0.12;
-  const lw = bW * 0.25;
-  const lh = bH * 0.25;
-  ctx.fillStyle = "#111128";
-  ctx.fillRect(x - bW * 0.22 + sw, y - lh, lw, lh);
-  ctx.fillRect(x + bW * 0.22 - lw - sw, y - lh, lw, lh);
-  ctx.fillStyle = "#000";
-  ctx.fillRect(x - bW * 0.26 + sw, y - 3 * scale, lw + 2, 4 * scale);
-  ctx.fillRect(x + bW * 0.18 - sw, y - 3 * scale, lw + 2, 4 * scale);
-  // Pants
-  ctx.fillStyle = "#1a1a2e";
-  ctx.fillRect(x - bW * 0.45, y - bH * 0.32, bW * 0.9, bH * 0.22);
-  // Jersey
-  ctx.fillStyle = jc!;
-  ctx.fillRect(x - bW * 0.48, y - bH * 0.72, bW * 0.96, bH * 0.44);
-  ctx.fillStyle = ac!;
-  ctx.fillRect(x - bW * 0.48, y - bH * 0.72, bW * 0.07, bH * 0.44);
-  ctx.fillRect(x + bW * 0.41, y - bH * 0.72, bW * 0.07, bH * 0.44);
-  // Shoulder pads
-  ctx.fillStyle = jc!;
-  ctx.fillRect(x - bW * 0.55, y - bH * 0.72, bW * 0.2, bH * 0.15);
-  ctx.fillRect(x + bW * 0.35, y - bH * 0.72, bW * 0.2, bH * 0.15);
-  // Arms
-  ctx.fillStyle = "#C89060";
-  ctx.fillRect(x - bW * 0.58, y - bH * 0.62, bW * 0.13, bH * 0.22);
-  ctx.fillRect(x + bW * 0.45, y - bH * 0.62, bW * 0.13, bH * 0.22);
-  // Position label
-  if (scale > 0.3 && dType) {
-    const tc: Record<string, string> = {
-      de: "#FF7070",
-      dt: "#FF3333",
-      lb: "#FFA500",
-      cb: "#6BAAFF",
-      s: "#4AAEFF",
-    };
-    ctx.fillStyle = tc[dType] ?? ac!;
-    ctx.font = `bold ${Math.max(8, Math.round(11 * scale))}px monospace`;
-    ctx.textAlign = "center";
-    ctx.fillText(
-      DEFENDER_STATS[dType as keyof typeof DEFENDER_STATS]?.label ?? "DEF",
-      x,
-      y - bH * 0.5,
+// ── Humanoid mesh builder ─────────────────────────────────────────────────────
+interface HumanoidParts {
+  group: THREE.Group;
+  leftUpperLeg: THREE.Mesh;
+  rightUpperLeg: THREE.Mesh;
+  leftLowerLeg: THREE.Mesh;
+  rightLowerLeg: THREE.Mesh;
+  leftUpperArm: THREE.Mesh;
+  rightUpperArm: THREE.Mesh;
+  torso: THREE.Mesh;
+  helmet: THREE.Mesh;
+  shieldSphere?: THREE.Mesh;
+}
+
+function buildHumanoid(
+  bodyColor: number,
+  helmetColor: number,
+  accentColor: number,
+  jerseyNumber: number | null = null,
+): HumanoidParts {
+  const group = new THREE.Group();
+
+  const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor });
+  const helmetMat = new THREE.MeshLambertMaterial({ color: helmetColor });
+  const accentMat = new THREE.MeshLambertMaterial({ color: accentColor });
+  const pantsMat = new THREE.MeshLambertMaterial({ color: 0x222244 });
+  const darkPantsMat = new THREE.MeshLambertMaterial({ color: 0x111133 });
+  const cleatMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+  const skinMat = new THREE.MeshLambertMaterial({ color: 0xc88050 });
+
+  // ── Head / Helmet ───────────────────────────────────────────────────────
+  const helmetGeo = new THREE.SphereGeometry(0.35, 12, 8);
+  const helmet = new THREE.Mesh(helmetGeo, helmetMat);
+  helmet.position.set(0, 2.1, 0);
+  group.add(helmet);
+
+  // Facemask visor
+  const visorGeo = new THREE.BoxGeometry(0.55, 0.12, 0.08);
+  const visor = new THREE.Mesh(
+    visorGeo,
+    new THREE.MeshLambertMaterial({ color: accentColor }),
+  );
+  visor.position.set(0, 1.92, 0.3);
+  group.add(visor);
+
+  // ── Torso / Jersey ─────────────────────────────────────────────────────
+  const torsoGeo = new THREE.BoxGeometry(0.82, 1.05, 0.45);
+  const torso = new THREE.Mesh(torsoGeo, bodyMat);
+  torso.position.set(0, 1.25, 0);
+  group.add(torso);
+
+  // Jersey number texture
+  if (jerseyNumber !== null) {
+    const numC = document.createElement("canvas");
+    numC.width = 64;
+    numC.height = 64;
+    const numCtx = numC.getContext("2d")!;
+    numCtx.fillStyle = `#${accentColor.toString(16).padStart(6, "0")}`;
+    numCtx.font = "bold 36px monospace";
+    numCtx.textAlign = "center";
+    numCtx.textBaseline = "middle";
+    numCtx.fillText(String(jerseyNumber), 32, 32);
+    const numTex = new THREE.CanvasTexture(numC);
+    const numGeo = new THREE.PlaneGeometry(0.4, 0.4);
+    const numMesh = new THREE.Mesh(
+      numGeo,
+      new THREE.MeshLambertMaterial({ map: numTex, transparent: true }),
     );
+    numMesh.position.set(0, 1.2, 0.23);
+    group.add(numMesh);
   }
-  // Helmet
-  const hr = bW * 0.28;
-  ctx.fillStyle = hc!;
-  ctx.beginPath();
-  ctx.arc(x, y - bH * 0.82, hr, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = ac!;
-  ctx.fillRect(x - hr * 0.8, y - bH * 0.78, hr * 1.6, 2 * scale);
-  ctx.fillRect(x - hr * 0.8, y - bH * 0.72, hr * 1.6, 2 * scale);
-  ctx.fillRect(x - scale, y - bH * 0.9, 2 * scale, bH * 0.22);
-  ctx.fillStyle = "#000";
-  ctx.beginPath();
-  ctx.arc(x - hr * 0.88, y - bH * 0.85, 2 * scale, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x + hr * 0.88, y - bH * 0.85, 2 * scale, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+
+  // Shoulder pads (accent)
+  for (const sx of [-0.55, 0.55]) {
+    const padGeo = new THREE.BoxGeometry(0.28, 0.2, 0.5);
+    const pad = new THREE.Mesh(padGeo, accentMat);
+    pad.position.set(sx, 1.75, 0);
+    group.add(pad);
+  }
+
+  // ── Upper arms ─────────────────────────────────────────────────────────
+  const uArmGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.52, 8);
+  const leftUpperArm = new THREE.Mesh(uArmGeo, bodyMat);
+  leftUpperArm.position.set(-0.62, 1.55, 0);
+  leftUpperArm.rotation.z = 0.3;
+  group.add(leftUpperArm);
+
+  const rightUpperArm = new THREE.Mesh(uArmGeo, bodyMat);
+  rightUpperArm.position.set(0.62, 1.55, 0);
+  rightUpperArm.rotation.z = -0.3;
+  group.add(rightUpperArm);
+
+  // ── Forearms ───────────────────────────────────────────────────────────
+  const foreArmGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.46, 8);
+  const leftForeArm = new THREE.Mesh(foreArmGeo, skinMat);
+  leftForeArm.position.set(-0.72, 1.2, 0);
+  leftForeArm.rotation.z = 0.5;
+  group.add(leftForeArm);
+
+  const rightForeArm = new THREE.Mesh(foreArmGeo, skinMat);
+  rightForeArm.position.set(0.72, 1.2, 0);
+  rightForeArm.rotation.z = -0.5;
+  group.add(rightForeArm);
+
+  // ── Hips / Waist ────────────────────────────────────────────────────────
+  const hipGeo = new THREE.BoxGeometry(0.7, 0.28, 0.4);
+  const hip = new THREE.Mesh(hipGeo, pantsMat);
+  hip.position.set(0, 0.68, 0);
+  group.add(hip);
+
+  // ── Upper legs ─────────────────────────────────────────────────────────
+  const uLegGeo = new THREE.CylinderGeometry(0.21, 0.19, 0.58, 8);
+  const leftUpperLeg = new THREE.Mesh(uLegGeo, pantsMat);
+  leftUpperLeg.position.set(-0.22, 0.42, 0);
+  group.add(leftUpperLeg);
+
+  const rightUpperLeg = new THREE.Mesh(uLegGeo, pantsMat);
+  rightUpperLeg.position.set(0.22, 0.42, 0);
+  group.add(rightUpperLeg);
+
+  // ── Lower legs ─────────────────────────────────────────────────────────
+  const lLegGeo = new THREE.CylinderGeometry(0.18, 0.16, 0.52, 8);
+  const leftLowerLeg = new THREE.Mesh(lLegGeo, darkPantsMat);
+  leftLowerLeg.position.set(-0.22, 0.12, 0);
+  group.add(leftLowerLeg);
+
+  const rightLowerLeg = new THREE.Mesh(lLegGeo, darkPantsMat);
+  rightLowerLeg.position.set(0.22, 0.12, 0);
+  group.add(rightLowerLeg);
+
+  // ── Feet / Cleats ───────────────────────────────────────────────────────
+  const cleatGeo = new THREE.BoxGeometry(0.26, 0.15, 0.46);
+  const leftCleat = new THREE.Mesh(cleatGeo, cleatMat);
+  leftCleat.position.set(-0.22, -0.14, 0.08);
+  group.add(leftCleat);
+
+  const rightCleat = new THREE.Mesh(cleatGeo, cleatMat);
+  rightCleat.position.set(0.22, -0.14, 0.08);
+  group.add(rightCleat);
+
+  // Group pivot at feet (y=0)
+  return {
+    group,
+    leftUpperLeg,
+    rightUpperLeg,
+    leftLowerLeg,
+    rightLowerLeg,
+    leftUpperArm,
+    rightUpperArm,
+    torso,
+    helmet,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// PPU LAYER 5: PLAYER
-// ---------------------------------------------------------------------------
-function drawPlayer(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const px = playerScreenX(gs);
-  const py = PLAYER_Y - gs.jumpY;
-  const S = 1.6;
+// ── TYPES ────────────────────────────────────────────────────────────────────
+interface PlayerMesh extends HumanoidParts {
+  shieldMesh?: THREE.Mesh;
+  turboLight?: THREE.PointLight;
+}
 
-  ctx.save();
-  if (gs.shieldActive) {
-    ctx.beginPath();
-    ctx.arc(px, py - 20 * S, 30 * S, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(46,123,214,0.18)";
-    ctx.fill();
-    ctx.strokeStyle = "#2E7BD6";
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-  }
-  if (gs.turboActive) {
-    for (let i = 3; i >= 1; i--) {
-      ctx.save();
-      ctx.globalAlpha = 0.12 - i * 0.03;
-      drawSprite(ctx, gs, px, py + i * 9, S, true);
-      ctx.restore();
+interface ObsMeshEntry {
+  group: THREE.Group;
+  type: "defender" | "crate" | "emoji";
+  parts?: HumanoidParts;
+}
+
+// ── ThreeRenderer ────────────────────────────────────────────────────────────
+export default class ThreeRenderer {
+  private renderer!: THREE.WebGLRenderer;
+  private scene!: THREE.Scene;
+  private camera!: THREE.PerspectiveCamera;
+  private grassTexture!: THREE.CanvasTexture;
+  private fieldMesh!: THREE.Mesh;
+  private endzoneMesh!: THREE.Mesh;
+  private endzoneMat!: THREE.MeshLambertMaterial;
+  private dirLight!: THREE.DirectionalLight;
+  private hemiLight!: THREE.HemisphereLight;
+  private playerMesh!: PlayerMesh;
+  private cameraPivotX = 0;
+  private obsMeshes: Map<number, ObsMeshEntry> = new Map();
+  private floatSprites: Map<string, THREE.Sprite> = new Map();
+  private prevStage: CareerStage = "HighSchool";
+  private emojiTexCache: Map<string, THREE.CanvasTexture> = new Map();
+
+  init(container: HTMLDivElement, w: number, h: number): void {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(w, h);
+    this.renderer.shadowMap.enabled = false;
+    container.appendChild(this.renderer.domElement);
+
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(SKY_COLORS.HighSchool);
+
+    // Camera: PerspectiveCamera, positioned behind/above player
+    this.camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 200);
+    this.camera.position.set(0, 6, -10);
+    this.camera.lookAt(0, 1, 8);
+
+    // ── Lighting ──────────────────────────────────────────────────────────
+    this.dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    this.dirLight.position.set(5, 12, -5);
+    this.scene.add(this.dirLight);
+
+    this.hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x2a7a20, 0.6);
+    this.scene.add(this.hemiLight);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+    this.scene.add(ambient);
+
+    // ── Field plane ───────────────────────────────────────────────────────
+    this.grassTexture = buildGrassTexture();
+    const fieldGeo = new THREE.PlaneGeometry(20, 60);
+    const fieldMat = new THREE.MeshLambertMaterial({
+      map: this.grassTexture,
+      color: 0x3a9a2a,
+    });
+    this.fieldMesh = new THREE.Mesh(fieldGeo, fieldMat);
+    this.fieldMesh.rotation.x = -Math.PI / 2;
+    this.fieldMesh.position.set(0, -0.01, 20);
+    this.scene.add(this.fieldMesh);
+
+    // ── Lane lines ─────────────────────────────────────────────────────────
+    for (let i = 0; i <= 5; i++) {
+      const laneGeo = new THREE.PlaneGeometry(0.06, 60);
+      const laneMat = new THREE.MeshLambertMaterial({
+        color: 0xffffff,
+        opacity: 0.55,
+        transparent: true,
+      });
+      const laneMesh = new THREE.Mesh(laneGeo, laneMat);
+      laneMesh.rotation.x = -Math.PI / 2;
+      const lx = -5 + i * 2;
+      laneMesh.position.set(lx, 0, 20);
+      this.scene.add(laneMesh);
     }
-  }
-  if (gs.spinning) {
-    const sx = Math.cos(gs.spinAngle);
-    ctx.save();
-    for (let g = 1; g <= 3; g++) {
-      ctx.save();
-      ctx.globalAlpha = 0.1 * (4 - g);
-      ctx.strokeStyle = "rgba(255,220,50,0.9)";
-      ctx.lineWidth = 2 * S;
-      ctx.translate(px + g * 10 * Math.sign(sx) * S, py - 18 * S);
-      ctx.scale(Math.abs(sx) * 0.5, 1);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 18 * S, 24 * S, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+
+    // ── Endzone ────────────────────────────────────────────────────────────
+    const ezTex = buildEndzoneTexture();
+    const ezGeo = new THREE.PlaneGeometry(20, 8);
+    this.endzoneMat = new THREE.MeshLambertMaterial({
+      map: ezTex,
+      color: 0xb8860b,
+      opacity: 0.85,
+      transparent: true,
+    });
+    this.endzoneMesh = new THREE.Mesh(ezGeo, this.endzoneMat);
+    this.endzoneMesh.rotation.x = -Math.PI / 2;
+    this.endzoneMesh.position.set(0, 0.02, 48);
+    this.scene.add(this.endzoneMesh);
+
+    // ── Stands (simple bleachers silhouette) ──────────────────────────────
+    const standMat = new THREE.MeshLambertMaterial({ color: 0x1a1a2e });
+    for (const side of [-11, 11] as const) {
+      const standGeo = new THREE.BoxGeometry(1.5, 3, 60);
+      const stand = new THREE.Mesh(standGeo, standMat);
+      stand.position.set(side, 1.5, 20);
+      this.scene.add(stand);
     }
-    ctx.restore();
-    ctx.save();
-    ctx.translate(px, py);
-    ctx.scale(sx, 1);
-    drawSprite(ctx, gs, 0, 0, S, false);
-    ctx.restore();
-  } else {
-    drawSprite(ctx, gs, px, py, S, false);
-  }
-  ctx.restore();
-}
 
-function drawSprite(
-  ctx: CanvasRenderingContext2D,
-  gs: GameState,
-  x: number,
-  y: number,
-  S: number,
-  trail: boolean,
-) {
-  let body = "#E83030";
-  let helm = "#C02020";
-  let acc = "#FFD700";
-  let num = gs.jerseyNumber ?? 32;
-  if (gs.activeLegend) {
-    const l = LEGENDARY_PLAYERS.find((p) => p.id === gs.activeLegend);
-    if (l) {
-      body = l.color;
-      helm = l.secondaryColor;
-      num = l.number;
+    // ── Player humanoid ───────────────────────────────────────────────────
+    const parts = buildHumanoid(0xe83030, 0xc02020, 0xffd700, 32);
+    this.playerMesh = parts as PlayerMesh;
+    this.playerMesh.group.position.set(0, 0, 0);
+    this.scene.add(this.playerMesh.group);
+
+    this.cameraPivotX = 0;
+  }
+
+  update(gs: GameState, dt: number): void {
+    if (!this.renderer) return;
+
+    // ── Sky / Stage change ─────────────────────────────────────────────────
+    if (gs.careerStage !== this.prevStage) {
+      this.prevStage = gs.careerStage;
+      this.scene.background = new THREE.Color(SKY_COLORS[gs.careerStage]);
+      this.hemiLight.groundColor = new THREE.Color(GROUND_SKY[gs.careerStage]);
+      // Update field color
+      const fm = this.fieldMesh.material as THREE.MeshLambertMaterial;
+      fm.color = new THREE.Color(GROUND_SKY[gs.careerStage]);
     }
-  }
-  const phase = (gs.frame * 0.22) % (Math.PI * 2);
-  ctx.save();
-  if (gs.turboActive && !trail) {
-    ctx.shadowColor = "#FFD700";
-    ctx.shadowBlur = 10 * S;
-  }
-  // Depth-stride legs: forward leg foreshortens, back leg extends
-  const stride = Math.sin(phase);
-  const lw = 7 * S;
-  const lbh = 14 * S;
-  const lf = stride > 0;
-  const lH = lf ? lbh * 0.65 : lbh;
-  const rH = !lf ? lbh * 0.65 : lbh;
-  const lA = lf ? 0.72 : 1.0;
-  const rA = !lf ? 0.72 : 1.0;
-  const lO = lf ? -3 * S : 0;
-  const rO = !lf ? -3 * S : 0;
-  ctx.save();
-  ctx.globalAlpha = (trail ? 0.55 : 1) * lA;
-  ctx.fillStyle = "#222244";
-  ctx.fillRect(x - 7 * S, y - lH + 2 * S + lO, lw, lH);
-  ctx.fillStyle = "#111";
-  ctx.fillRect(x - 8 * S, y - S + lO, lw + 2 * S, 4 * S);
-  ctx.restore();
-  ctx.save();
-  ctx.globalAlpha = (trail ? 0.55 : 1) * rA;
-  ctx.fillStyle = "#222244";
-  ctx.fillRect(x, y - rH + 2 * S + rO, lw, rH);
-  ctx.fillStyle = "#111";
-  ctx.fillRect(x - S, y - S + rO, lw + 2 * S, 4 * S);
-  ctx.restore();
-  // Pants
-  ctx.fillStyle = "#222244";
-  ctx.fillRect(x - 11 * S, y - 20 * S, 22 * S, 11 * S);
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 11 * S, y - 20 * S, 22 * S, 2 * S);
-  // Jersey
-  ctx.fillStyle = body;
-  ctx.fillRect(x - 12 * S, y - 36 * S, 24 * S, 18 * S);
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 1.5 * S, y - 36 * S, 3 * S, 18 * S);
-  ctx.fillRect(x - 12 * S, y - 34 * S, 24 * S, 2 * S);
-  if (!trail) {
-    ctx.fillStyle = acc;
-    ctx.font = `bold ${Math.round(9 * S)}px monospace`;
-    ctx.textAlign = "center";
-    ctx.fillText(String(num), x, y - 23 * S);
-  }
-  // Shoulder pads
-  ctx.fillStyle = body;
-  ctx.fillRect(x - 20 * S, y - 38 * S, 12 * S, 7 * S);
-  ctx.fillRect(x + 8 * S, y - 38 * S, 12 * S, 7 * S);
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 20 * S, y - 38 * S, 12 * S, 2 * S);
-  ctx.fillRect(x + 8 * S, y - 38 * S, 12 * S, 2 * S);
-  // Helmet
-  ctx.fillStyle = helm;
-  ctx.beginPath();
-  ctx.arc(x, y - 45 * S, 12 * S, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = acc;
-  ctx.fillRect(x - 2 * S, y - 57 * S, 4 * S, 18 * S);
-  ctx.fillStyle = "#000";
-  ctx.beginPath();
-  ctx.arc(x - 10 * S, y - 46 * S, 2.5 * S, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x + 10 * S, y - 46 * S, 2.5 * S, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = helm;
-  ctx.fillRect(x - 7 * S, y - 36 * S, 14 * S, 4 * S);
-  ctx.restore();
-}
 
-// ---------------------------------------------------------------------------
-// PPU LAYER 6: FLOATING TEXT
-// ---------------------------------------------------------------------------
-function drawFloats(ctx: CanvasRenderingContext2D, gs: GameState) {
-  for (const ft of gs.floats) {
-    const a = Math.min(1, (ft.life / ft.maxLife) * 2);
-    ctx.save();
-    ctx.globalAlpha = a;
-    ctx.font = "bold 14px monospace";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "rgba(0,0,0,0.7)";
-    ctx.fillText(ft.text, ft.x + 1, ft.y + 1);
-    ctx.fillStyle = ft.color;
-    ctx.fillText(ft.text, ft.x, ft.y);
-    ctx.restore();
-  }
-}
+    // ── Player position + animation ────────────────────────────────────────
+    const targetX = this._playerWorldX(gs);
+    this.cameraPivotX += (targetX - this.cameraPivotX) * Math.min(1, 8 * dt);
 
-// ---------------------------------------------------------------------------
-// PPU LAYER 7: COACH TUTORIAL
-// ---------------------------------------------------------------------------
-function drawCoach(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const alpha = Math.min(1, gs.tutTimer * 0.8);
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  const cx = 50;
-  const cy = CH - 90;
-  ctx.fillStyle = "#2244AA";
-  ctx.fillRect(cx - 12, cy, 24, 30);
-  ctx.fillStyle = "#C8906A";
-  ctx.fillRect(cx - 22, cy + 5, 12, 14);
-  ctx.fillRect(cx + 10, cy + 5, 12, 14);
-  ctx.fillStyle = "#F5DEB3";
-  ctx.fillRect(cx + 10, cy + 5, 10, 12);
-  ctx.fillStyle = "#C8906A";
-  ctx.fillRect(cx - 7, cy - 16, 14, 10);
-  ctx.beginPath();
-  ctx.arc(cx, cy - 22, 11, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#1a1a2e";
-  ctx.fillRect(cx - 13, cy - 30, 26, 8);
-  ctx.fillRect(cx - 15, cy - 26, 30, 4);
-  ctx.fillStyle = "#111";
-  ctx.fillRect(cx - 9, cy + 28, 8, 14);
-  ctx.fillRect(cx + 1, cy + 28, 8, 14);
-  const words = gs.tutMessage.split(" ");
-  const lines: string[] = [];
-  let cur = "";
-  ctx.font = "bold 10px monospace";
-  for (const w of words) {
-    const t = cur ? `${cur} ${w}` : w;
-    if (ctx.measureText(t).width > 180 && cur) {
-      lines.push(cur);
-      cur = w;
-    } else cur = t;
-  }
-  if (cur) lines.push(cur);
-  const bW = 210;
-  const bH = lines.length * 16 + 18;
-  const bX = cx + 26;
-  const bY = cy - 30 - bH;
-  ctx.fillStyle = "rgba(255,255,255,0.96)";
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(bX, bY, bW, bH, 10);
-  else ctx.rect(bX, bY, bW, bH);
-  ctx.fill();
-  ctx.strokeStyle = "#3FAE5A";
-  ctx.lineWidth = 2.5;
-  ctx.stroke();
-  ctx.fillStyle = "rgba(255,255,255,0.96)";
-  ctx.beginPath();
-  ctx.moveTo(bX + 14, bY + bH);
-  ctx.lineTo(cx + 16, cy - 24);
-  ctx.lineTo(bX + 32, bY + bH);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = "#0a0a1a";
-  ctx.font = "bold 10px monospace";
-  ctx.textAlign = "left";
-  lines.forEach((l, i) => ctx.fillText(l, bX + 10, bY + 16 + i * 16));
-  ctx.restore();
-}
+    const pm = this.playerMesh;
 
-// ---------------------------------------------------------------------------
-// SCREENS
-// ---------------------------------------------------------------------------
-function drawIdleScreen(ctx: CanvasRenderingContext2D, gs: GameState) {
-  ctx.save();
-  ctx.fillStyle = "rgba(0,0,0,0.82)";
-  ctx.fillRect(0, 0, CW, CH);
-  const cx = CW / 2;
-  ctx.fillStyle = "#3FAE5A";
-  ctx.font = "bold 38px monospace";
-  ctx.textAlign = "center";
-  ctx.fillText("PIXEL", cx, CH * 0.3);
-  ctx.fillStyle = "#E7E7E7";
-  ctx.fillText("GRIDIRON", cx, CH * 0.3 + 46);
-  ctx.fillStyle = "#FFD700";
-  ctx.font = "bold 13px monospace";
-  ctx.fillText(
-    (STAGE_NAMES[gs.careerStage] || gs.careerStage).toUpperCase(),
-    cx,
-    CH * 0.3 + 82,
-  );
-  if (Math.sin(gs.frame * 0.08) > 0) {
-    ctx.fillStyle = "rgba(63,174,90,0.9)";
-    ctx.font = "bold 15px monospace";
-    ctx.fillText("PRESS START", cx, CH * 0.3 + 116);
-  }
-  ctx.fillStyle = "#6A7480";
-  ctx.font = "10px monospace";
-  ctx.fillText("TAP ◀ ▶ to change lanes", cx, CH * 0.3 + 148);
-  ctx.fillText(
-    "SPIN breaks defenders · HURDLE jumps crates",
-    cx,
-    CH * 0.3 + 164,
-  );
-  ctx.fillText("TURBO for speed boost", cx, CH * 0.3 + 180);
-  if (gs.teamName) {
-    ctx.fillStyle = "rgba(255,255,255,0.28)";
-    ctx.font = "10px monospace";
-    ctx.fillText(gs.teamName.toUpperCase(), cx, CH * 0.3 + 204);
-  }
-  ctx.restore();
-}
+    // Legend color sync
+    if (gs.activeLegend) {
+      const lp = LEGENDARY_PLAYERS.find((l) => l.id === gs.activeLegend);
+      if (lp) {
+        (pm.torso.material as THREE.MeshLambertMaterial).color.set(lp.color);
+        (pm.helmet.material as THREE.MeshLambertMaterial).color.set(
+          lp.secondaryColor,
+        );
+      }
+    }
 
-function drawPauseScreen(ctx: CanvasRenderingContext2D, _gs: GameState) {
-  ctx.save();
-  ctx.fillStyle = "rgba(0,0,0,0.72)";
-  ctx.fillRect(0, 0, CW, CH);
-  ctx.fillStyle = "#E7E7E7";
-  ctx.font = "bold 28px monospace";
-  ctx.textAlign = "center";
-  ctx.fillText("PAUSED", CW / 2, CH / 2 - 16);
-  ctx.fillStyle = "#3FAE5A";
-  ctx.font = "bold 13px monospace";
-  ctx.fillText("PRESS START TO RESUME", CW / 2, CH / 2 + 18);
-  ctx.restore();
-}
+    // Position
+    pm.group.position.x = this.cameraPivotX;
 
-function drawTackleScreen(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const alpha = Math.min(0.88, (1.8 - gs.tackleTimer) * 0.6);
-  ctx.save();
-  ctx.fillStyle = `rgba(0,0,0,${alpha.toFixed(2)})`;
-  ctx.fillRect(0, 0, CW, CH);
-  if (alpha > 0.35) {
-    if (gs.touchdown) {
-      // Touchdown celebration screen
-      ctx.fillStyle = "#FFD700";
-      ctx.font = "bold 36px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("TOUCHDOWN!", CW / 2, CH * 0.32);
-      ctx.fillStyle = "#3FAE5A";
-      ctx.font = "bold 18px monospace";
-      ctx.fillText(`${Math.floor(gs.fieldZ)} YARDS`, CW / 2, CH * 0.32 + 46);
-      ctx.fillStyle = "#E7E7E7";
-      ctx.font = "bold 13px monospace";
-      ctx.fillText("TAP START → NEXT PLAY", CW / 2, CH * 0.32 + 80);
+    // Jump
+    if (gs.jumping) {
+      pm.group.position.y = Math.max(0, (gs.jumpY / 220) * 3);
     } else {
-      ctx.fillStyle = "#C63A3A";
-      ctx.font = "bold 30px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("TACKLED!", CW / 2, CH * 0.35);
-      ctx.fillStyle = "#E7E7E7";
-      ctx.font = "bold 18px monospace";
-      ctx.fillText(`${Math.floor(gs.fieldZ)} YARDS`, CW / 2, CH * 0.35 + 44);
-      ctx.fillStyle = "#3FAE5A";
-      ctx.font = "bold 13px monospace";
-      ctx.fillText("TAP START → NEXT PLAY", CW / 2, CH * 0.35 + 78);
+      pm.group.position.y = 0;
+    }
+
+    // Tackle lean
+    if (gs.phase === "tackled") {
+      const elapsed = 1.8 - gs.tackleTimer;
+      pm.group.rotation.x = Math.min(Math.PI * 0.4, elapsed * 0.8);
+      pm.group.position.y = Math.max(-0.5, -0.5 * Math.min(1, elapsed / 1.8));
+    } else {
+      pm.group.rotation.x = 0;
+    }
+
+    // Spin
+    if (gs.spinning) {
+      pm.group.rotation.y = gs.spinAngle;
+    } else {
+      pm.group.rotation.y = 0;
+    }
+
+    // Leg stride animation
+    if (gs.phase === "playing") {
+      const stride = Math.sin(gs.frame * 0.18);
+      pm.leftUpperLeg.rotation.x = stride * 0.65;
+      pm.rightUpperLeg.rotation.x = -stride * 0.65;
+      pm.leftLowerLeg.rotation.x = Math.max(0, stride * 0.4);
+      pm.rightLowerLeg.rotation.x = Math.max(0, -stride * 0.4);
+      pm.leftUpperArm.rotation.x = -stride * 0.4;
+      pm.rightUpperArm.rotation.x = stride * 0.4;
+    } else {
+      pm.leftUpperLeg.rotation.x = 0;
+      pm.rightUpperLeg.rotation.x = 0;
+      pm.leftLowerLeg.rotation.x = 0;
+      pm.rightLowerLeg.rotation.x = 0;
+    }
+
+    // Shield effect
+    if (gs.shieldActive) {
+      if (!pm.shieldMesh) {
+        const sg = new THREE.SphereGeometry(1.4, 12, 8);
+        pm.shieldMesh = new THREE.Mesh(
+          sg,
+          new THREE.MeshLambertMaterial({
+            color: 0x2e7bd6,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.35,
+          }),
+        );
+        pm.shieldMesh.position.set(0, 1.2, 0);
+        pm.group.add(pm.shieldMesh);
+      }
+    } else if (pm.shieldMesh) {
+      pm.group.remove(pm.shieldMesh);
+      pm.shieldMesh.geometry.dispose();
+      (pm.shieldMesh.material as THREE.MeshLambertMaterial).dispose();
+      pm.shieldMesh = undefined;
+    }
+
+    // Turbo glow
+    if (gs.turboActive) {
+      if (!pm.turboLight) {
+        pm.turboLight = new THREE.PointLight(0xffd700, 2.5, 6);
+        pm.turboLight.position.set(0, 1, 0);
+        pm.group.add(pm.turboLight);
+      }
+    } else if (pm.turboLight) {
+      pm.group.remove(pm.turboLight);
+      pm.turboLight = undefined;
+    }
+
+    // ── Camera smooth follow ───────────────────────────────────────────────
+    this.camera.position.x +=
+      (this.cameraPivotX - this.camera.position.x) * Math.min(1, 6 * dt);
+    this.camera.position.y = 6;
+    this.camera.position.z = -10;
+    this.camera.lookAt(this.cameraPivotX, 1, 8);
+
+    // ── Field texture scroll ───────────────────────────────────────────────
+    this.grassTexture.offset.y = (gs.fieldScroll * 8) % 1;
+
+    // ── Obstacle meshes ────────────────────────────────────────────────────
+    const currentIds = new Set(gs.obstacles.map((o) => o.id));
+
+    // Remove stale meshes
+    for (const [id, entry] of this.obsMeshes) {
+      if (!currentIds.has(id)) {
+        this.scene.remove(entry.group);
+        this._disposeGroup(entry.group);
+        this.obsMeshes.delete(id);
+      }
+    }
+
+    // Add / update obstacle meshes
+    for (const obs of gs.obstacles) {
+      if (obs.worldZ > SPAWN_Z + 2 || obs.worldZ < -2) continue;
+
+      const ox = laneWorldX(obs.lane);
+      const oz = worldZToSceneZ(obs.worldZ);
+
+      if (!this.obsMeshes.has(obs.id)) {
+        // Create new mesh
+        let entry: ObsMeshEntry;
+        if (obs.emojiPowerUp) {
+          entry = this._buildEmojiOrb(obs.emojiPowerUp.emoji);
+        } else if (obs.type === "crate") {
+          entry = this._buildCrateMesh(!!obs.powerUp, gs.careerStage);
+        } else {
+          entry = this._buildDefenderMesh(
+            obs.defenderType ?? "de",
+            gs.careerStage,
+          );
+        }
+        this.obsMeshes.set(obs.id, entry);
+        this.scene.add(entry.group);
+      }
+
+      const entry = this.obsMeshes.get(obs.id)!;
+
+      if (obs.broken && obs.breakTimer > 0) {
+        // Break animation: scale down, fade out
+        const frac = obs.breakTimer / BREAK_DUR;
+        entry.group.scale.setScalar(frac * 0.8);
+        for (const child of entry.group.children) {
+          if (child instanceof THREE.Mesh) {
+            (child.material as THREE.MeshLambertMaterial).opacity = frac;
+            (child.material as THREE.MeshLambertMaterial).transparent = true;
+          }
+        }
+      } else if (!obs.broken) {
+        entry.group.scale.setScalar(1);
+      }
+
+      // Update position
+      entry.group.position.set(ox, obs.type === "crate" ? 0.4 : 0, oz);
+
+      // Defender leg stride
+      if (entry.parts && gs.phase === "playing") {
+        const offset = obs.id * 1.3;
+        const defStride = Math.sin(gs.frame * 0.15 + offset);
+        entry.parts.leftUpperLeg.rotation.x = defStride * 0.5;
+        entry.parts.rightUpperLeg.rotation.x = -defStride * 0.5;
+      }
+
+      // Emoji bob
+      if (entry.type === "emoji") {
+        entry.group.position.y = 0.5 + Math.sin(gs.frame * 0.08) * 0.2;
+      }
+    }
+
+    // ── Floating text sprites ──────────────────────────────────────────────
+    // Remove expired floats
+    const activeFloatKeys = new Set(gs.floats.map((_, i) => `ft_${i}`));
+    for (const [key, sprite] of this.floatSprites) {
+      if (!activeFloatKeys.has(key)) {
+        this.scene.remove(sprite);
+        (sprite.material as THREE.SpriteMaterial).map?.dispose();
+        (sprite.material as THREE.SpriteMaterial).dispose();
+        this.floatSprites.delete(key);
+      }
+    }
+
+    // Add/update float text
+    gs.floats.forEach((ft, i) => {
+      const key = `ft_${i}`;
+      const alpha = Math.min(1, (ft.life / ft.maxLife) * 2);
+      if (!this.floatSprites.has(key)) {
+        const sprite = this._buildFloatSprite(ft.text, ft.color);
+        this.floatSprites.set(key, sprite);
+        this.scene.add(sprite);
+      }
+      const sprite = this.floatSprites.get(key)!;
+      sprite.position.set(
+        this.cameraPivotX,
+        2.5 + (1 - ft.life / ft.maxLife) * 2,
+        1.5,
+      );
+      (sprite.material as THREE.SpriteMaterial).opacity = alpha;
+    });
+
+    // ── Endzone pulse ──────────────────────────────────────────────────────
+    if (gs.touchdown) {
+      const pulse = 0.7 + 0.3 * Math.sin(gs.frame * 0.15);
+      this.endzoneMat.opacity = pulse;
+    }
+
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  resize(w: number, h: number): void {
+    if (!this.renderer) return;
+    this.renderer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  dispose(): void {
+    if (!this.renderer) return;
+    // Dispose all obstacle meshes
+    for (const entry of this.obsMeshes.values()) {
+      this._disposeGroup(entry.group);
+    }
+    this.obsMeshes.clear();
+    // Dispose float sprites
+    for (const sprite of this.floatSprites.values()) {
+      (sprite.material as THREE.SpriteMaterial).map?.dispose();
+      (sprite.material as THREE.SpriteMaterial).dispose();
+    }
+    this.floatSprites.clear();
+    // Dispose emoji textures
+    for (const tex of this.emojiTexCache.values()) tex.dispose();
+    this.emojiTexCache.clear();
+    // Dispose scene
+    this.grassTexture.dispose();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentNode) {
+      this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
     }
   }
-  ctx.restore();
+
+  // ── Private helpers ────────────────────────────────────────────────────────
+
+  private _playerWorldX(gs: GameState): number {
+    const fromX = laneWorldX(gs.lane);
+    const toX = laneWorldX(gs.targetLane);
+    return fromX + (toX - fromX) * gs.laneT;
+  }
+
+  private _buildDefenderMesh(
+    defType: string,
+    stage: CareerStage,
+  ): ObsMeshEntry {
+    const c = DEFENDER_JERSEY[stage];
+    const parts = buildHumanoid(c.body, c.helmet, c.accent, null);
+    const group = parts.group;
+
+    // Scale by defender type
+    if (defType === "dt") group.scale.set(1.4, 0.9, 1.4);
+    else if (defType === "lb") group.scale.set(1.1, 1.1, 1.1);
+    else if (defType === "de") group.scale.set(1.0, 1.15, 1.0);
+    else if (defType === "cb" || defType === "s")
+      group.scale.set(0.9, 1.2, 0.9);
+
+    // Defender label sprite above head
+    const label =
+      DEFENDER_STATS[defType as keyof typeof DEFENDER_STATS]?.label ?? "DEF";
+    const labelSprite = this._buildFloatSprite(label, "#ffffff");
+    labelSprite.scale.set(1.2, 0.5, 1);
+    labelSprite.position.set(0, 3.2, 0);
+    group.add(labelSprite);
+
+    return { group, type: "defender", parts };
+  }
+
+  private _buildCrateMesh(
+    hasPowerUp: boolean,
+    stage: CareerStage,
+  ): ObsMeshEntry {
+    const group = new THREE.Group();
+    const geo = new THREE.BoxGeometry(0.82, 0.82, 0.82);
+
+    const stageColors: Record<CareerStage, number> = {
+      HighSchool: 0x8b4513,
+      College: 0x9b2020,
+      Pro: 0x2d2d2d,
+      SuperBowl: 0xb8860b,
+      HallOfFame: 0xdaa520,
+    };
+    const matColor = stageColors[stage];
+    const mat = new THREE.MeshLambertMaterial({
+      color: matColor,
+      emissive: hasPowerUp ? 0x221100 : 0x000000,
+    });
+    const crate = new THREE.Mesh(geo, mat);
+    group.add(crate);
+
+    // Edge lines
+    const edgesGeo = new THREE.EdgesGeometry(geo);
+    const edgesMat = new THREE.LineBasicMaterial({
+      color: 0x000000,
+      opacity: 0.5,
+      transparent: true,
+    });
+    const edges = new THREE.LineSegments(edgesGeo, edgesMat);
+    group.add(edges);
+
+    // Cross lines on front face
+    const crossMat = new THREE.LineBasicMaterial({
+      color: 0x000000,
+      opacity: 0.4,
+      transparent: true,
+    });
+    const crossGeo = new THREE.BufferGeometry();
+    crossGeo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(
+        [
+          -0.41, -0.41, 0.42, 0.41, 0.41, 0.42, 0.41, -0.41, 0.42, -0.41, 0.41,
+          0.42,
+        ],
+        3,
+      ),
+    );
+    crossGeo.setIndex([0, 1, 2, 3]);
+    const cross = new THREE.LineSegments(crossGeo, crossMat);
+    group.add(cross);
+
+    // Gold power-up glow
+    if (hasPowerUp) {
+      const glowLight = new THREE.PointLight(0xffd700, 1.5, 3);
+      glowLight.position.set(0, 0, 0);
+      group.add(glowLight);
+    }
+
+    return { group, type: "crate" };
+  }
+
+  private _buildEmojiOrb(emoji: string): ObsMeshEntry {
+    const group = new THREE.Group();
+    const color = EMOJI_COLORS[emoji] ?? 0xffd700;
+
+    const geo = new THREE.SphereGeometry(0.42, 12, 8);
+    const mat = new THREE.MeshLambertMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.4,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const orb = new THREE.Mesh(geo, mat);
+    group.add(orb);
+
+    // Emoji billboard sprite
+    if (!this.emojiTexCache.has(emoji)) {
+      this.emojiTexCache.set(emoji, buildEmojiTex(emoji));
+    }
+    const spriteMat = new THREE.SpriteMaterial({
+      map: this.emojiTexCache.get(emoji),
+      transparent: true,
+    });
+    const sprite = new THREE.Sprite(spriteMat);
+    sprite.scale.set(1.1, 1.1, 1);
+    sprite.position.set(0, 0, 0);
+    group.add(sprite);
+
+    // Point light
+    const light = new THREE.PointLight(color, 1.8, 4);
+    group.add(light);
+
+    return { group, type: "emoji" };
+  }
+
+  private _buildFloatSprite(text: string, color: string): THREE.Sprite {
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = 64;
+    const ctx = c.getContext("2d")!;
+    ctx.font = "bold 28px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillText(text, 129, 33);
+    ctx.fillStyle = color;
+    ctx.fillText(text, 128, 32);
+    const tex = new THREE.CanvasTexture(c);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(3, 0.75, 1);
+    return sprite;
+  }
+
+  private _disposeGroup(group: THREE.Group): void {
+    group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh || obj instanceof THREE.LineSegments) {
+        obj.geometry.dispose();
+        if (Array.isArray(obj.material)) {
+          for (const m of obj.material) m.dispose();
+        } else {
+          obj.material.dispose();
+        }
+      } else if (obj instanceof THREE.Sprite) {
+        const sm = obj.material as THREE.SpriteMaterial;
+        sm.map?.dispose();
+        sm.dispose();
+      }
+    });
+  }
 }
 
-function drawHUD(ctx: CanvasRenderingContext2D, gs: GameState) {
-  const yards = Math.floor(gs.fieldZ);
-  const down = gs.currentDown ?? 1;
-  const toGo = Math.max(0, Math.ceil(gs.yardsToGo ?? 10));
-  ctx.save();
-  // Down & distance pill
-  ctx.fillStyle = "rgba(0,0,0,0.62)";
-  ctx.fillRect(CW - 130, 54, 126, 40);
-  const downLabel =
-    down === 1 ? "1ST" : down === 2 ? "2ND" : down === 3 ? "3RD" : "4TH";
-  const downColor = down >= 4 ? "#C63A3A" : down >= 3 ? "#D4A017" : "#3FAE5A";
-  ctx.fillStyle = downColor;
-  ctx.font = "bold 14px monospace";
-  ctx.textAlign = "right";
-  ctx.fillText(`${downLabel} & ${toGo}`, CW - 6, 70);
-  ctx.fillStyle = "rgba(200,200,200,0.7)";
-  ctx.font = "bold 10px monospace";
-  ctx.fillText(`${yards} YDS`, CW - 6, 88);
-  ctx.restore();
-}
-
-export { laneX };
+// Keep backward-compat named export used by old renderer
+export { laneWorldX };
+export type { HumanoidParts };
