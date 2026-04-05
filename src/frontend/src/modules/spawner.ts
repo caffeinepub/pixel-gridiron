@@ -1,53 +1,55 @@
 /**
- * spawner.ts — reads FIELD_MAP and pushes obstacles into gs.obstacles.
+ * spawner.ts — reads level-specific FIELD_MAP and pushes obstacles into gs.obstacles.
  * Tile 8 = endzone. When the player reaches an endzone row it triggers touchdown.
- * The map plays once end-to-end (no looping) — 300 tiles of football field.
+ * Uses getFieldMap(gs.careerStage) so each stage has its own formation patterns.
  */
 import {
   DEFENDER_STATS,
   EMOJI_POWERUPS,
-  FIELD_MAP,
   type GameState,
-  MAP_ROWS,
   type Obstacle,
   ROW_SPACING,
   SPAWN_Z,
   TILE_DEF_TYPE,
   type TileCode,
+  getFieldMap,
 } from "../types/game";
 import { endPlay } from "./collision";
 
 export function tickSpawner(gs: GameState): void {
-  // Advance through map rows as field progresses
-  while (gs.fieldZ >= gs.nextSpawnZ && gs.mapRow < MAP_ROWS) {
-    const row = FIELD_MAP[gs.mapRow];
+  const fieldMap = getFieldMap(gs.careerStage);
+  const mapRows = fieldMap.length;
+
+  while (gs.fieldZ >= gs.nextSpawnZ && gs.mapRow < mapRows) {
+    const row = fieldMap[gs.mapRow];
     if (row && row[0] === "8") {
-      // Endzone row reached — touchdown!
       gs.touchdown = true;
       endPlay(gs);
       return;
     }
-    spawnRow(gs, gs.mapRow);
+    spawnRow(gs, gs.mapRow, fieldMap);
     gs.mapRow++;
     gs.nextSpawnZ += ROW_SPACING;
   }
 
-  // If we've exhausted the map without hitting endzone, loop from wave 2
-  // (skip scrimmage line 99999 at row 0)
-  if (gs.mapRow >= MAP_ROWS && !gs.touchdown) {
+  // If map exhausted without endzone, loop from wave 2 (skip scrimmage)
+  if (gs.mapRow >= mapRows && !gs.touchdown) {
     gs.mapRow = 2;
     gs.nextSpawnZ = gs.fieldZ + ROW_SPACING;
   }
 }
 
-function spawnRow(gs: GameState, rowIdx: number): void {
-  const row = FIELD_MAP[rowIdx];
+function spawnRow(
+  gs: GameState,
+  rowIdx: number,
+  fieldMap: readonly string[],
+): void {
+  const row = fieldMap[rowIdx];
   if (!row) return;
 
   let emojiIdx = 0;
   for (let lane = 0; lane < 5; lane++) {
     const code = Number.parseInt(row[lane]) as TileCode;
-    // 0 = open, 8 = endzone, 9 = startline — nothing to spawn
     if (code === 0 || code === 8 || code === 9) continue;
 
     const defType = TILE_DEF_TYPE[code];

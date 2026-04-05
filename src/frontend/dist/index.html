@@ -10,11 +10,14 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Pixel Gridiron" />
     <meta name="theme-color" content="#3FAE5A" />
-    <meta name="description" content="Pixel Gridiron - Mobile football runner RPG with retro 2.5D graphics" />
+    <meta name="description" content="Pixel Gridiron - Mobile football runner RPG with retro 3D graphics" />
+    <!-- Apple touch icon for iOS home screen -->
+    <link rel="apple-touch-icon" href="/assets/generated/icon-192-transparent.dim_192x192.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/assets/generated/icon-192-transparent.dim_192x192.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>Pixel Gridiron</title>
     <style>
-      /* Applied before React hydrates — prevents any flash of scrollable/selectable content */
+      /* Applied before React hydrates */
       html, body, #root {
         position: fixed;
         overflow: hidden;
@@ -29,12 +32,133 @@
         -webkit-text-size-adjust: none;
         -moz-text-size-adjust: none;
              text-size-adjust: none;
+        background: #0d0f12;
+      }
+      /* Install banner */
+      #install-banner {
+        display: none;
+        position: fixed;
+        bottom: 260px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(15,25,35,0.96);
+        border: 1.5px solid #3FAE5A;
+        border-radius: 12px;
+        padding: 10px 18px;
+        z-index: 9999;
+        font-family: monospace;
+        font-size: 13px;
+        color: #fff;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(63,174,90,0.3);
+        gap: 10px;
+        align-items: center;
+        white-space: nowrap;
+        pointer-events: auto;
+      }
+      #install-banner.visible { display: flex; }
+      #install-btn {
+        background: #3FAE5A;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        font-family: monospace;
+        font-weight: bold;
+        font-size: 12px;
+        padding: 6px 14px;
+        cursor: pointer;
+        letter-spacing: 1px;
+        margin-left: 8px;
+      }
+      #install-dismiss {
+        background: transparent;
+        border: none;
+        color: rgba(255,255,255,0.5);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 0 4px;
+        margin-left: 4px;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-CsidrMKm.js"></script>
+    <script type="module" crossorigin src="/assets/index-BZkeQh-y.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-D86FJ3BE.css">
   </head>
   <body>
+    <!-- Install to home screen banner -->
+    <div id="install-banner" role="banner" aria-label="Install app">
+      <span>&#127944; Add to Home Screen</span>
+      <button id="install-btn" type="button">INSTALL</button>
+      <button id="install-dismiss" type="button" aria-label="Dismiss">&#10005;</button>
+    </div>
     <div id="root"></div>
+    <script>
+      // Service Worker registration
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then((reg) => {
+            console.log('[App] SW registered:', reg.scope);
+            // Notify SW to skip waiting if a new version is waiting
+            if (reg.waiting) {
+              reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            }
+            reg.addEventListener('updatefound', () => {
+              const newWorker = reg.installing;
+              if (newWorker) {
+                newWorker.addEventListener('statechange', () => {
+                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    newWorker.postMessage({ type: 'SKIP_WAITING' });
+                  }
+                });
+              }
+            });
+          }).catch((err) => {
+            console.warn('[App] SW registration failed:', err);
+          });
+        });
+      }
+
+      // Install prompt (Android Chrome / Edge)
+      let deferredPrompt = null;
+      const installBanner = document.getElementById('install-banner');
+      const installBtn = document.getElementById('install-btn');
+      const dismissBtn = document.getElementById('install-dismiss');
+
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        if (installBanner) installBanner.classList.add('visible');
+      });
+
+      if (installBtn) {
+        installBtn.addEventListener('click', () => {
+          if (!deferredPrompt) return;
+          deferredPrompt.prompt();
+          deferredPrompt.userChoice.then((result) => {
+            console.log('[App] Install choice:', result.outcome);
+            deferredPrompt = null;
+            if (installBanner) installBanner.classList.remove('visible');
+          });
+        });
+      }
+
+      if (dismissBtn) {
+        dismissBtn.addEventListener('click', () => {
+          if (installBanner) installBanner.classList.remove('visible');
+          deferredPrompt = null;
+        });
+      }
+
+      // Hide banner if already installed / running standalone
+      if (window.matchMedia('(display-mode: standalone)').matches ||
+          window.navigator.standalone === true) {
+        if (installBanner) installBanner.style.display = 'none';
+      }
+
+      window.addEventListener('appinstalled', () => {
+        console.log('[App] App installed!');
+        if (installBanner) installBanner.classList.remove('visible');
+        deferredPrompt = null;
+      });
+    </script>
   </body>
 </html>

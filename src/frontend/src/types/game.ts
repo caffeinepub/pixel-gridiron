@@ -132,247 +132,373 @@ export interface GameState {
   touchdown: boolean;
 }
 
-// ── Canvas ────────────────────────────────────────────────────────────────────
+// ── Canvas ──────────────────────────────────────────────────────────────────
 export const CW = 360;
 export const CH = 640;
-export const HORIZON_Y = 152; // raised slightly for more field depth
+export const HORIZON_Y = 152;
 export const GROUND_Y = CH;
 export const PLAYER_Y = CH - 82;
-export const VANISH_X = CW / 2; // 180
+export const VANISH_X = CW / 2;
 
-// Lane centers: WIDE at bottom (full screen), converge at horizon with real perspective
-// Bottom span: 28..332 = 304px. Horizon span: 60..300 = 240px — much wider vanishing point
 export const LANE_BOT: readonly number[] = [28, 96, 180, 264, 332];
 export const LANE_HOR: readonly number[] = [60, 110, 180, 250, 300];
 
-// ── World physics ─────────────────────────────────────────────────────────────
+// ── World physics ───────────────────────────────────────────────────────────────
 export const SPAWN_Z = 12;
 export const COLLISION_Z = 1.6;
 export const BASE_SPEED = 4.5;
 export const MAX_SPEED = 8.5;
 export const SPEED_RAMP = 0.06;
-export const ROW_SPACING = 6; // yards between tile rows
+export const ROW_SPACING = 6;
 export const FIRST_ROW_Z = 4;
 export const GRAVITY_PX = 600;
 export const JUMP_VY = 220;
 export const BREAK_DUR = 0.33;
 
-// ── Tile map ──────────────────────────────────────────────────────────────────
-// 0=open 1=DE 2=crate 3=powerup 4=LB 5=safety 6=DT 7=corner 8=endzone 9=startline
-// 300 rows = ~300 tiles of field. Endzone is the final rows (tile 8).
-export const FIELD_MAP: readonly string[] = [
-  // ── Line of scrimmage ──
-  "99999",
+// ── LEVEL-SEGMENTED FIELD MAPS ───────────────────────────────────────────────────
+// Tile codes:
+//   0=open  1=DE  2=crate  3=powerup  4=LB  5=safety  6=DT  7=corner  8=endzone  9=start
+// Each map ends with 3 rows of "88888" (endzone trigger).
+// Formations are designed for the stage difficulty:
+//   HighSchool  — wide gaps, single defenders, lots of powerups
+//   College     — staggered DE/LB, crate alleys, moderate powerups
+//   Pro         — tight formations, DT walls, few powerups
+//   SuperBowl   — blitz packages, safeties + corners, rare powerups
+//   HallOfFame  — near-wall formations, force spin/hurdle, max difficulty
+
+// ——— HIGH SCHOOL: Simple spread, always one clean lane, generous powerups ———
+export const FIELD_MAP_HS: readonly string[] = [
+  "99999", // scrimmage
   "00000",
-  // ── Wave 1 — DE rush ──
-  "10101",
-  "00000",
-  "00000",
-  // ── Wave 2 — crates ──
-  "20200",
-  "00000",
-  "02000",
-  // ── Wave 3 — DT center ──
-  "06060",
-  "00000",
-  "00000",
-  // ── Wave 4 — powerups ──
-  "30032",
-  "00000",
-  "00223",
-  // ── Wave 5 — LBs ──
-  "04040",
+  // P1: single DE left
+  "10000",
   "00000",
   "00000",
-  // ── Wave 6 — crate alley ──
-  "02220",
+  // P2: crate right two
+  "00022",
   "00000",
-  "20002",
-  // ── Wave 7 — corners ──
-  "70007",
+  // P3: powerup grab
+  "33000",
   "00000",
-  "00000",
-  // ── Wave 8 — DE flanks open middle ──
+  // P4: DE flanks, open middle
   "10001",
   "00000",
   "00000",
-  // ── Wave 9 — safety blitz ──
-  "05050",
+  // P5: single crate center
+  "00200",
+  "00000",
+  // P6: powerup row
+  "30030",
+  "00000",
+  // P7: DE left, crate right
+  "10002",
   "00000",
   "00000",
-  // ── Wave 10 — full powerup row ──
-  "33333",
-  "00000",
-  "00000",
-  // ── Wave 11 — DT wall left gap ──
-  "06660",
-  "00000",
-  "00000",
-  // ── Wave 12 — mixed ──
-  "02604",
-  "00000",
-  "00000",
-  // ── Wave 13 — corners + safeties ──
-  "78870",
-  "00000",
-  "00000",
-  // ── Wave 14 — crate wall ──
-  "20202",
+  // P8: two crates spread
   "02020",
   "00000",
-  // ── Wave 15 — DE spread ──
-  "10101",
-  "00000",
-  "00000",
-  // ── Wave 16 — LB wall gap center ──
-  "44044",
-  "00000",
-  "00000",
-  // ── Wave 17 — powerup grab ──
-  "03030",
-  "00000",
-  "30303",
-  // ── Wave 18 — DT + crates ──
-  "26062",
-  "00000",
-  "00000",
-  // ── Wave 19 — safety wall gap ──
-  "55055",
-  "00000",
-  "00000",
-  // ── Wave 20 — corner blitz ──
-  "70707",
-  "00000",
-  "00000",
-  // ── Wave 21 — open run ──
-  "00000",
-  "00000",
-  "02000",
-  // ── Wave 22 — DE + LB ──
-  "14041",
-  "00000",
-  "00000",
-  // ── Wave 23 — crates + powerup ──
-  "02320",
-  "00000",
-  "23200",
-  // ── Wave 24 — DT solo ──
-  "00600",
-  "00000",
-  "00000",
-  // ── Wave 25 — chaos wave ──
-  "16161",
-  "00000",
-  "00000",
-  // ── Wave 26 — powerup row ──
-  "33033",
-  "00000",
-  "00000",
-  // ── Wave 27 — LB wall ──
-  "44444",
-  "00000",
-  "00000",
-  // ── Wave 28 — crate field ──
-  "22022",
-  "02220",
-  "00000",
-  // ── Wave 29 — DE + corner ──
-  "71017",
-  "00000",
-  "00000",
-  // ── Wave 30 — safety net ──
-  "55555",
-  "00000",
-  "00000",
-  // ── Wave 31 — open + powerup ──
-  "03000",
-  "00000",
-  "00030",
-  // ── Wave 32 — DT flanks ──
-  "60006",
-  "00000",
-  "00000",
-  // ── Wave 33 — mixed crunch ──
-  "24642",
-  "00000",
-  "00000",
-  // ── Wave 34 — corner + safety ──
-  "75057",
-  "00000",
-  "00000",
-  // ── Wave 35 — crate run ──
-  "02020",
-  "20202",
-  "00000",
-  // ── Wave 36 — DE wall gap right ──
-  "11110",
-  "00000",
-  "00000",
-  // ── Wave 37 — powerup shower ──
-  "33333",
-  "00000",
-  "00000",
-  // ── Wave 38 — LB + DT combo ──
-  "46064",
-  "00000",
-  "00000",
-  // ── Wave 39 — safety blitz ──
-  "05550",
-  "00000",
-  "00000",
-  // ── Wave 40 — corner spread ──
-  "70707",
-  "00000",
-  "00000",
-  // ── Wave 41 — open field ──
-  "00000",
-  "00000",
-  "00000",
-  // ── Wave 42 — DE + crate ──
-  "12021",
-  "00000",
-  "00000",
-  // ── Wave 43 — powerup lane ──
+  // P9: bonus powerups
   "03003",
   "00000",
-  "30030",
-  // ── Wave 44 — DT double ──
-  "06006",
+  // P10: DE center only
+  "00100",
   "00000",
   "00000",
-  // ── Wave 45 — LB + crate ──
-  "42024",
+  // P11: crate wall with gap
+  "22022",
   "00000",
-  "00000",
-  // ── Wave 46 — safety net ──
-  "55055",
-  "00000",
-  "00000",
-  // ── Wave 47 — corner + DE ──
-  "71117",
-  "00000",
-  "00000",
-  // ── Wave 48 — crate bonus ──
-  "22222",
-  "00000",
-  "00000",
-  // ── Wave 49 — final push defenders ──
-  "16161",
-  "05050",
-  "00000",
-  // ── Wave 50 — last powerups before endzone ──
+  // P12: full powerup shower
   "33333",
   "00000",
+  // P13: LB solo
+  "00400",
   "00000",
-  // ── ENDZONE ──
+  "00000",
+  // P14: open field bonus
+  "00000",
+  "03000",
+  "00000",
+  // P15: DE + crate mixed
+  "12001",
+  "00000",
+  "00000",
+  // ENDZONE
   "88888",
   "88888",
   "88888",
 ] as const;
 
-export const MAP_ROWS = FIELD_MAP.length;
-// Total field length in yards = MAP_ROWS * ROW_SPACING
-// ~155 rows * 6 yards = ~930 yards of content. Endzone triggers at tile 8.
+// ——— COLLEGE: Staggered DE/LB, crate alleys, moderate powerups ———
+export const FIELD_MAP_COL: readonly string[] = [
+  "99999",
+  "00000",
+  // P1: DE spread
+  "10101",
+  "00000",
+  "00000",
+  // P2: crate alley left
+  "22000",
+  "00000",
+  // P3: LB + powerup
+  "04030",
+  "00000",
+  // P4: DE double rush flanks
+  "10001",
+  "00000",
+  "00000",
+  // P5: crate + DE stagger
+  "02100",
+  "00010",
+  "00000",
+  // P6: LB center + crates
+  "24042",
+  "00000",
+  // P7: powerup + DE
+  "03001",
+  "00000",
+  // P8: corner flanks
+  "70007",
+  "00000",
+  "00000",
+  // P9: DE wall gap right
+  "11110",
+  "00000",
+  // P10: powerup shower
+  "33033",
+  "00000",
+  // P11: LB wall gap left
+  "04440",
+  "00000",
+  "00000",
+  // P12: crate + LB
+  "24200",
+  "00000",
+  // P13: DE + corner combo
+  "71017",
+  "00000",
+  "00000",
+  // P14: crate bonus
+  "02220",
+  "00000",
+  // P15: safety blitz
+  "05050",
+  "00000",
+  "00000",
+  // P16: powerup lane
+  "30303",
+  "00000",
+  // ENDZONE
+  "88888",
+  "88888",
+  "88888",
+] as const;
+
+// ——— PRO: Tight formations, DT walls, crate fields, few powerups ———
+export const FIELD_MAP_PRO: readonly string[] = [
+  "99999",
+  "00000",
+  // P1: DT center
+  "06060",
+  "00000",
+  "00000",
+  // P2: DE flanks + DT
+  "10601",
+  "00000",
+  // P3: LB blitz
+  "44044",
+  "00000",
+  "00000",
+  // P4: crate field
+  "22022",
+  "02020",
+  "00000",
+  // P5: rare powerup
+  "00300",
+  "00000",
+  // P6: DT wall gap right
+  "66060",
+  "00000",
+  "00000",
+  // P7: DE + LB combo
+  "14041",
+  "00000",
+  // P8: corner + safety net
+  "75057",
+  "00000",
+  "00000",
+  // P9: crate alley + powerup
+  "22322",
+  "00000",
+  // P10: DT double
+  "60006",
+  "00000",
+  "00000",
+  // P11: full DE rush
+  "11011",
+  "00000",
+  // P12: mixed crunch
+  "24642",
+  "00000",
+  "00000",
+  // P13: safety net
+  "55055",
+  "00000",
+  // P14: powerup + DT
+  "36063",
+  "00000",
+  "00000",
+  // P15: LB + crate wall
+  "42024",
+  "00000",
+  // ENDZONE
+  "88888",
+  "88888",
+  "88888",
+] as const;
+
+// ——— SUPER BOWL: Blitz packages, safety + corner combos, rare powerups ———
+export const FIELD_MAP_SB: readonly string[] = [
+  "99999",
+  "00000",
+  // P1: safety + DE blitz
+  "15051",
+  "00000",
+  "00000",
+  // P2: corner + DT
+  "76067",
+  "00000",
+  // P3: LB wall center gap
+  "44044",
+  "00000",
+  "00000",
+  // P4: crate + blitz
+  "62026",
+  "00000",
+  // P5: rare powerup + DE
+  "10310",
+  "00000",
+  // P6: DT + safety wall
+  "65056",
+  "00000",
+  "00000",
+  // P7: corner blitz wide
+  "70707",
+  "00000",
+  // P8: LB + DE combined
+  "14141",
+  "00000",
+  "00000",
+  // P9: crate field dense
+  "22222",
+  "02020",
+  "00000",
+  // P10: single powerup rare
+  "00030",
+  "00000",
+  // P11: safety net wide
+  "55555",
+  "00000",
+  "00000",
+  // P12: DT walls + DE rush
+  "61016",
+  "00000",
+  // P13: corner + safety net
+  "75757",
+  "00000",
+  "00000",
+  // P14: DT blitz
+  "66666",
+  "00000",
+  // P15: powerup just before endzone
+  "03030",
+  "00000",
+  // ENDZONE
+  "88888",
+  "88888",
+  "88888",
+] as const;
+
+// ——— HALL OF FAME: Near-wall formations, forced spin/hurdle, hardest ———
+export const FIELD_MAP_HOF: readonly string[] = [
+  "99999",
+  "00000",
+  // P1: DT + DE full blitz
+  "16161",
+  "00000",
+  "00000",
+  // P2: LB wall no gap (must spin)
+  "44444",
+  "00000",
+  // P3: crate wall (must hurdle)
+  "22222",
+  "00000",
+  // P4: safety corner double
+  "75057",
+  "05050",
+  "00000",
+  // P5: rare star powerup
+  "00300",
+  "00000",
+  // P6: DT wall gap left
+  "06660",
+  "00000",
+  "00000",
+  // P7: DE + LB + corner
+  "17471",
+  "00000",
+  // P8: crate + DT
+  "26062",
+  "00000",
+  "00000",
+  // P9: all safeties
+  "55555",
+  "00000",
+  // P10: powerup then DT
+  "03003",
+  "66066",
+  "00000",
+  // P11: corner net
+  "77777",
+  "00000",
+  // P12: DE + crate + LB
+  "12421",
+  "00000",
+  "00000",
+  // P13: mixed wall no gap
+  "46164",
+  "00000",
+  // P14: DT + safety final push
+  "65056",
+  "16061",
+  "00000",
+  // P15: last powerup
+  "33333",
+  "00000",
+  // ENDZONE
+  "88888",
+  "88888",
+  "88888",
+] as const;
+
+// Default field map (High School) — used by spawner when stage isn't resolved
+export const FIELD_MAP: readonly string[] = FIELD_MAP_HS;
+export const MAP_ROWS = FIELD_MAP_HS.length;
+
+// Stage → field map selector
+export function getFieldMap(stage: CareerStage): readonly string[] {
+  switch (stage) {
+    case "HighSchool":
+      return FIELD_MAP_HS;
+    case "College":
+      return FIELD_MAP_COL;
+    case "Pro":
+      return FIELD_MAP_PRO;
+    case "SuperBowl":
+      return FIELD_MAP_SB;
+    case "HallOfFame":
+      return FIELD_MAP_HOF;
+  }
+}
 
 export const DEFENDER_STATS: Record<
   DefenderType,
