@@ -1,8 +1,9 @@
 /**
- * GameCanvas.tsx v31 — 2D Canvas game view.
- * v31: Player GIF sprites rendered as real DOM <img> elements (positioned absolutely
- *      over the canvas) so the browser animates them natively every frame.
- *      Canvas handles field, obstacles, HUD, shadow, and spin arc only.
+ * GameCanvas.tsx v34 — Wired to new collision/movement/renderer.
+ * - snapPhase cycles: READY → SET → GO (button label changes each press)
+ * - detectCollisions takes prevMapRow argument (tile-row crossing detection)
+ * - hitsThisPlay reset on new play start
+ * - pressSnap() from movement.ts handles snap sequence
  */
 import type React from "react";
 import {
@@ -12,13 +13,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { detectCollisions } from "../modules/collision";
+import { detectCollisions, endPlay } from "../modules/collision";
 import {
   inputJump,
   inputLeft,
   inputRight,
   inputSpin,
   inputTurbo,
+  pressSnap,
   updateMovement,
 } from "../modules/movement";
 import Renderer2D from "../modules/renderer";
@@ -40,7 +42,6 @@ interface Props {
   onTackled: (yards: number, xp: number, items: string[]) => void;
 }
 
-// GIF asset paths (served from /public/assets/)
 const GIF_RUN =
   "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-straight_forward_sprint_left_l_north-019d5fdc-fbd3-750c-a3ed-3ac454759bd6.gif";
 const GIF_TURBO =
@@ -48,15 +49,26 @@ const GIF_TURBO =
 const GIF_SPIN =
   "/assets/3rd_person_low_angle_top_down_3d_runningback_ameri_custom-start_out_sprinting_do_a_360_a_north-019d5fdc-fbd6-7380-b121-d45289383c21.gif";
 
-// ── Phase overlay screens ─────────────────────────────────────────────────────────────────
+/** Snap button label based on current phase/snapPhase */
+function snapButtonLabel(gs: GameState): string {
+  if (gs.phase === "playing") return "■ PAUSE";
+  if (gs.phase === "paused") return "▶ RESUME";
+  if (gs.phase === "idle") {
+    if (gs.snapPhase === null) return "● READY";
+    if (gs.snapPhase === "ready") return "◐ SET";
+    if (gs.snapPhase === "set") return "▶ GO!";
+  }
+  return "● READY";
+}
+
 function PhaseOverlay({
   gs,
-  onStart,
+  onSnap,
   onNextPlay,
   tick,
 }: {
   gs: GameState;
-  onStart: () => void;
+  onSnap: () => void;
   onNextPlay: () => void;
   tick: number;
 }) {
@@ -77,76 +89,89 @@ function PhaseOverlay({
   };
 
   if (gs.phase === "idle") {
+    const btnLabel = snapButtonLabel(gs);
+    const isSnapping = gs.snapPhase !== null;
     return (
       <div
-        style={{ ...overlay, background: "rgba(0,0,0,0.82)" }}
+        style={{
+          ...overlay,
+          background: isSnapping ? "rgba(0,0,0,0.45)" : "rgba(0,0,0,0.82)",
+        }}
         data-ocid="game.idle_state"
       >
-        <div
-          style={{
-            fontSize: 40,
-            fontWeight: "bold",
-            color: "#3FAE5A",
-            letterSpacing: 2,
-            lineHeight: 1,
-          }}
-        >
-          PIXEL
-        </div>
-        <div
-          style={{
-            fontSize: 36,
-            fontWeight: "bold",
-            color: "#e7e7e7",
-            letterSpacing: 3,
-            marginBottom: 8,
-          }}
-        >
-          GRIDIRON
-        </div>
-        <div
-          style={{
-            fontSize: 13,
-            color: "#FFD700",
-            fontWeight: "bold",
-            marginBottom: 24,
-            letterSpacing: 2,
-          }}
-        >
-          {STAGE_NAMES[gs.careerStage]?.toUpperCase()}
-        </div>
+        {!isSnapping && (
+          <>
+            <div
+              style={{
+                fontSize: 40,
+                fontWeight: "bold",
+                color: "#3FAE5A",
+                letterSpacing: 2,
+                lineHeight: 1,
+              }}
+            >
+              PIXEL
+            </div>
+            <div
+              style={{
+                fontSize: 36,
+                fontWeight: "bold",
+                color: "#e7e7e7",
+                letterSpacing: 3,
+                marginBottom: 8,
+              }}
+            >
+              GRIDIRON
+            </div>
+            <div
+              style={{
+                fontSize: 13,
+                color: "#FFD700",
+                fontWeight: "bold",
+                marginBottom: 24,
+                letterSpacing: 2,
+              }}
+            >
+              {STAGE_NAMES[gs.careerStage]?.toUpperCase()}
+            </div>
+          </>
+        )}
         <button
           style={{
-            background: "#3FAE5A",
+            background: gs.snapPhase === "set" ? "#e6a817" : "#3FAE5A",
             border: "none",
             color: "#fff",
             fontFamily: "monospace",
             fontWeight: "bold",
-            fontSize: 16,
-            padding: "12px 32px",
+            fontSize: 18,
+            padding: "14px 36px",
             borderRadius: 8,
             cursor: "pointer",
             letterSpacing: 2,
-            marginBottom: 20,
+            marginBottom: isSnapping ? 0 : 20,
+            boxShadow: isSnapping ? "0 0 20px rgba(255,215,0,0.5)" : "none",
+            transition: "all 0.15s",
           }}
-          onClick={onStart}
+          onClick={onSnap}
           type="button"
           data-ocid="game.primary_button"
         >
-          ▶ PRESS START
+          {btnLabel}
         </button>
-        <div
-          style={{
-            fontSize: 10,
-            color: "rgba(150,160,170,0.8)",
-            textAlign: "center",
-            maxWidth: 260,
-            lineHeight: 1.6,
-          }}
-        >
-          TAP ◄ ► to change lanes · SPIN breaks defenders{"\n"}
-          HURDLE jumps crates · TURBO for speed boost
-        </div>
+        {!isSnapping && (
+          <div
+            style={{
+              fontSize: 10,
+              color: "rgba(150,160,170,0.8)",
+              textAlign: "center",
+              maxWidth: 260,
+              lineHeight: 1.6,
+            }}
+          >
+            TAP ◄ ► to change lanes · SPIN breaks defenders{"\n"}
+            HURDLE jumps crates · TURBO for speed boost
+          </div>
+        )}
         {gs.teamName ? (
           <div
             style={{
@@ -191,7 +216,7 @@ function PhaseOverlay({
             borderRadius: 8,
             cursor: "pointer",
           }}
-          onClick={onStart}
+          onClick={onSnap}
           type="button"
           data-ocid="game.confirm_button"
         >
@@ -293,7 +318,6 @@ function PhaseOverlay({
   return null;
 }
 
-// ── Main GameCanvas ───────────────────────────────────────────────────────────────────
 const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
   { gameStateRef, onScoreUpdate, onTackled },
   ref,
@@ -305,12 +329,12 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
   const tackleFired = useRef(false);
   const [phaseTick, setPhaseTick] = useState(0);
   const phaseTickRef = useRef(0);
+  // Track previous mapRow to detect tile-row crossings for collision
+  const prevMapRowRef = useRef(0);
 
-  // DOM refs for the animated GIF sprite elements
   const imgRunRef = useRef<HTMLImageElement>(null);
   const imgTurboRef = useRef<HTMLImageElement>(null);
   const imgSpinRef = useRef<HTMLImageElement>(null);
-  // Track whether each GIF has loaded
   const gifLoadedRef = useRef({ run: false, turbo: false, spin: false });
 
   const bumpPhaseTick = () => {
@@ -318,7 +342,6 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     setPhaseTick(phaseTickRef.current);
   };
 
-  // Stable RAF loop ref — never recreated
   const loopRef = useRef<(ts: number) => void>(() => {});
 
   loopRef.current = (ts: number) => {
@@ -336,9 +359,16 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     gs.frame += 1;
 
     if (gs.phase === "playing") {
+      // Capture mapRow BEFORE spawner tick (needed for tile-row collision detection)
+      const prevMapRow = prevMapRowRef.current;
+
       updateMovement(gs, dt);
       tickSpawner(gs);
-      detectCollisions(gs);
+
+      // Detect collisions based on tile rows crossed this frame
+      const currMapRow = gs.mapRow;
+      detectCollisions(gs, prevMapRow);
+      prevMapRowRef.current = currMapRow;
 
       for (const ft of gs.floats) {
         ft.y -= 38 * dt;
@@ -363,73 +393,78 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
 
     rendererRef.current?.update(gs, dt);
 
-    // ── Sync GIF img overlay position to canvas player pos ──────────────────
+    // ── Sync GIF img overlay ────────────────────────────────────────────────
     const renderer = rendererRef.current;
     if (renderer && mountRef.current) {
-      const pos = renderer.lastPlayerPos;
-      const containerW = mountRef.current.offsetWidth;
-      const containerH = mountRef.current.offsetHeight;
-      const canvasW = renderer.W;
-      const canvasH = renderer.H;
+      const isPlaying = gs.phase === "playing";
 
-      // Scale from canvas pixels to container CSS pixels
-      const scaleX = canvasW > 0 ? containerW / canvasW : 1;
-      const scaleY = canvasH > 0 ? containerH / canvasH : 1;
+      if (!isPlaying) {
+        for (const imgRef of [imgRunRef, imgTurboRef, imgSpinRef]) {
+          if (imgRef.current) imgRef.current.style.display = "none";
+        }
+      } else {
+        const pos = renderer.lastPlayerPos;
+        if (pos.size === 0) {
+          for (const imgRef of [imgRunRef, imgTurboRef, imgSpinRef]) {
+            if (imgRef.current) imgRef.current.style.display = "none";
+          }
+        } else {
+          const containerW = mountRef.current.offsetWidth;
+          const containerH = mountRef.current.offsetHeight;
+          const canvasW = renderer.W;
+          const canvasH = renderer.H;
 
-      const cssX = pos.x * scaleX;
-      const cssY = pos.y * scaleY;
-      const cssSize = pos.size * scaleY;
+          const scaleX = canvasW > 0 ? containerW / canvasW : 1;
+          const scaleY = canvasH > 0 ? containerH / canvasH : 1;
 
-      // GIF display size: 2x the player size slot, centered on cssX/cssY
-      const gifH = cssSize * 2.2;
-      const gifW = gifH; // treat as square; browser preserves aspect ratio
+          const cssX = pos.x * scaleX;
+          const cssY = pos.y * scaleY;
+          const cssSize = pos.size * scaleY;
 
-      const left = cssX - gifW * 0.5;
-      const top = cssY - gifH * 0.92; // feet near bottom of GIF image
+          const gifH = cssSize * 2.4;
+          const gifW = gifH;
+          const left = cssX - gifW * 0.5;
+          const top = cssY - gifH * 0.9;
 
-      // Decide which GIF is active
-      const showSpin = gs.spinning && gifLoadedRef.current.spin;
-      const showTurbo =
-        gs.turboActive && !gs.spinning && gifLoadedRef.current.turbo;
-      const showRun = !showSpin && !showTurbo && gifLoadedRef.current.run;
+          const showSpin = gs.spinning && gifLoadedRef.current.spin;
+          const showTurbo =
+            gs.turboActive && !gs.spinning && gifLoadedRef.current.turbo;
+          const showRun = !showSpin && !showTurbo && gifLoadedRef.current.run;
 
-      // Hide all first, then show the active one
-      const baseStyle = {
-        position: "absolute" as const,
-        width: `${gifW}px`,
-        height: `${gifH}px`,
-        left: `${left}px`,
-        top: `${top}px`,
-        imageRendering: "pixelated" as const,
-        pointerEvents: "none" as const,
-        objectFit: "contain" as const,
-      };
+          const baseStyle = {
+            position: "absolute" as const,
+            width: `${gifW}px`,
+            height: `${gifH}px`,
+            left: `${left}px`,
+            top: `${top}px`,
+            imageRendering: "pixelated" as const,
+            pointerEvents: "none" as const,
+            objectFit: "contain" as const,
+          };
 
-      // Only show during playing phase
-      const visible = gs.phase === "playing";
-
-      if (imgRunRef.current) {
-        Object.assign(imgRunRef.current.style, {
-          ...baseStyle,
-          display: visible && showRun ? "block" : "none",
-        });
-      }
-      if (imgTurboRef.current) {
-        Object.assign(imgTurboRef.current.style, {
-          ...baseStyle,
-          display: visible && showTurbo ? "block" : "none",
-        });
-      }
-      if (imgSpinRef.current) {
-        Object.assign(imgSpinRef.current.style, {
-          ...baseStyle,
-          display: visible && showSpin ? "block" : "none",
-        });
+          if (imgRunRef.current) {
+            Object.assign(imgRunRef.current.style, {
+              ...baseStyle,
+              display: showRun ? "block" : "none",
+            });
+          }
+          if (imgTurboRef.current) {
+            Object.assign(imgTurboRef.current.style, {
+              ...baseStyle,
+              display: showTurbo ? "block" : "none",
+            });
+          }
+          if (imgSpinRef.current) {
+            Object.assign(imgSpinRef.current.style, {
+              ...baseStyle,
+              display: showSpin ? "block" : "none",
+            });
+          }
+        }
       }
     }
   };
 
-  // Mount renderer — runs ONCE
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -438,11 +473,11 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     const h = Math.max(400, rect.height || 600);
     const r = new Renderer2D();
     r.init(mount, w, h);
-    // GIF sprites are DOM img elements — disable canvas fallback
     r.useCanvasFallback = false;
     rendererRef.current = r;
     prevTsRef.current = 0;
     tackleFired.current = false;
+    prevMapRowRef.current = 0;
     rafRef.current = requestAnimationFrame((ts) => loopRef.current(ts));
     return () => {
       cancelAnimationFrame(rafRef.current);
@@ -452,7 +487,6 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Resize
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -464,26 +498,23 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
     return () => obs.disconnect();
   }, []);
 
-  // GIF load handlers — when loaded, disable canvas fallback entirely
   const handleGifLoad = (key: "run" | "turbo" | "spin") => {
     gifLoadedRef.current[key] = true;
-    // At least run GIF loaded — fully disable canvas fallback
     if (rendererRef.current) {
       rendererRef.current.useCanvasFallback = false;
     }
   };
 
-  // Input
   useImperativeHandle(
     ref,
     () => ({
       pressLeft: () => {
-        if (gameStateRef.current.phase === "playing")
-          inputLeft(gameStateRef.current);
+        const gs = gameStateRef.current;
+        if (gs.phase === "playing" || gs.phase === "idle") inputLeft(gs);
       },
       pressRight: () => {
-        if (gameStateRef.current.phase === "playing")
-          inputRight(gameStateRef.current);
+        const gs = gameStateRef.current;
+        if (gs.phase === "playing" || gs.phase === "idle") inputRight(gs);
       },
       pressUp: () => {
         if (gameStateRef.current.phase === "playing")
@@ -507,22 +538,50 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
 
   const gs = gameStateRef.current;
 
-  const handleStart = () => {
+  const handleSnap = () => {
     const g = gameStateRef.current;
-    if (g.phase === "idle") g.phase = "playing";
-    else if (g.phase === "playing") g.phase = "paused";
-    else if (g.phase === "paused") g.phase = "playing";
+    pressSnap(g);
     bumpPhaseTick();
   };
 
   const handleNextPlay = () => {
     const g = gameStateRef.current;
     if (g.phase === "tackled") {
+      // Reset play state
       g.phase = "idle";
+      g.snapPhase = null;
+      g.hitsThisPlay = 0;
+      g.fieldZ = 0;
+      g.fieldScroll = 0;
+      g.mapRow = 0;
+      g.nextSpawnZ = 8; // FIRST_ROW_Z
+      g.obstacles = [];
+      g.floats = [];
+      g.playYards = 0;
+      g.playXp = 0;
+      g.playItems = [];
+      g.touchdown = false;
+      g.tackleTimer = 0;
+      g.jumping = false;
+      g.jumpY = 0;
+      g.jumpVY = 0;
+      g.spinning = false;
+      g.spinTimer = 0;
+      g.spinAngle = 0;
+      g.turboActive = false;
+      g.turboTimer = 0;
+      g.shieldActive = false;
+      g.shieldTimer = 0;
+      g.hurtFlash = 0;
+      g.tutActive = false;
+      prevMapRowRef.current = 0;
       tackleFired.current = false;
       bumpPhaseTick();
     }
   };
+
+  // Endplay export to allow spawner to still call it (via collision module)
+  void endPlay;
 
   return (
     <div
@@ -535,18 +594,12 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
         background: "#02020f",
       }}
     >
-      {/* Canvas mount — renderer writes here */}
       <div
         ref={mountRef}
         style={{ width: "100%", height: "100%", display: "block" }}
       />
 
-      {/*
-        Animated GIF overlay sprites.
-        These are real <img> elements so the browser plays them as full GIFs.
-        Positioned absolutely and synced to canvas player coords every RAF frame.
-        Initial display:none — the loop reveals the correct one each frame.
-      */}
+      {/* GIF overlays */}
       <img
         ref={imgRunRef}
         src={GIF_RUN}
@@ -574,10 +627,11 @@ const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanvas(
 
       <PhaseOverlay
         gs={gs}
-        onStart={handleStart}
+        onSnap={handleSnap}
         onNextPlay={handleNextPlay}
         tick={phaseTick}
       />
+
       {gs.hurtFlash > 0 && (
         <div
           style={{

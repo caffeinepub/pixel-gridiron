@@ -7,6 +7,7 @@ export type CareerStage =
 export type DefenderType = "de" | "dt" | "lb" | "cb" | "s";
 export type TileCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 export type GamePhase = "idle" | "playing" | "paused" | "tackled";
+export type SnapPhase = "ready" | "set" | "go" | null;
 
 export interface Skills {
   speed: number;
@@ -80,13 +81,15 @@ export interface PlayResult {
 
 export interface GameState {
   phase: GamePhase;
+  snapPhase: SnapPhase;
+  hitsThisPlay: number;
   fieldZ: number;
   fieldScroll: number;
   speed: number;
-  lane: number; // committed lane (integer, 0–4)
-  targetLane: number; // destination lane for current slide
-  fromLane: number; // ← origin lane for current slide — MUST stay in sync with lane
-  laneT: number; // 0=start of slide, 1=complete
+  lane: number;
+  targetLane: number;
+  fromLane: number;
+  laneT: number;
   jumpY: number;
   jumpVY: number;
   jumping: boolean;
@@ -139,7 +142,7 @@ export interface GameState {
 // ── Canvas dimensions ────────────────────────────────────────────────────────
 export const CW = 360;
 export const CH = 640;
-export const HORIZON_Y = 16; // pixels from top — used by legacy HUD refs
+export const HORIZON_Y = 16;
 export const GROUND_Y = CH;
 export const PLAYER_Y = CH - 82;
 export const VANISH_X = CW / 2;
@@ -148,23 +151,18 @@ export const LANE_BOT: readonly number[] = [28, 96, 180, 264, 332];
 export const LANE_HOR: readonly number[] = [48, 108, 180, 252, 312];
 
 // ── World physics ────────────────────────────────────────────────────────────
-export const SPAWN_Z = 12;
-// COLLISION_Z = 0: fire exactly when worldZ crosses 0 (tile at player's feet visually)
+export const SPAWN_Z = 20;
 export const COLLISION_Z = 0;
 export const BASE_SPEED = 4.5;
 export const MAX_SPEED = 8.5;
 export const SPEED_RAMP = 0.06;
 export const ROW_SPACING = 8;
-export const FIRST_ROW_Z = 4;
+export const FIRST_ROW_Z = 8;
 export const GRAVITY_PX = 600;
 export const JUMP_VY = 220;
 export const BREAK_DUR = 0.33;
 
 // ── LEVEL-SEGMENTED FIELD MAPS ───────────────────────────────────────────────
-// Tile codes:
-//   0=open  1=DE  2=crate  3=powerup  4=LB  5=safety  6=DT  7=corner  8=endzone  9=start
-
-// ——— HIGH SCHOOL ———
 export const FIELD_MAP_HS: readonly string[] = [
   "99999",
   "00000",
@@ -210,7 +208,6 @@ export const FIELD_MAP_HS: readonly string[] = [
   "88888",
 ] as const;
 
-// ——— COLLEGE ———
 export const FIELD_MAP_COL: readonly string[] = [
   "99999",
   "00000",
@@ -258,7 +255,6 @@ export const FIELD_MAP_COL: readonly string[] = [
   "88888",
 ] as const;
 
-// ——— PRO ———
 export const FIELD_MAP_PRO: readonly string[] = [
   "99999",
   "00000",
@@ -305,7 +301,6 @@ export const FIELD_MAP_PRO: readonly string[] = [
   "88888",
 ] as const;
 
-// ——— SUPER BOWL ———
 export const FIELD_MAP_SB: readonly string[] = [
   "99999",
   "00000",
@@ -351,7 +346,6 @@ export const FIELD_MAP_SB: readonly string[] = [
   "88888",
 ] as const;
 
-// ——— HALL OF FAME ———
 export const FIELD_MAP_HOF: readonly string[] = [
   "99999",
   "00000",
@@ -559,12 +553,14 @@ export const defaultProfile: PlayerProfile = {
 export function createGameState(p: PlayerProfile): GameState {
   return {
     phase: "idle",
+    snapPhase: null,
+    hitsThisPlay: 0,
     fieldZ: 0,
     fieldScroll: 0,
     speed: BASE_SPEED + p.skills.speed * 0.3,
     lane: 2,
     targetLane: 2,
-    fromLane: 2, // starts in middle
+    fromLane: 2,
     laneT: 1,
     jumpY: 0,
     jumpVY: 0,

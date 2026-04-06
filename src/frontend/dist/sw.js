@@ -1,83 +1,51 @@
-// Pixel Gridiron Service Worker v31
-// Versioned cache: wipes all old caches on first load.
-const CACHE_VERSION = 'pixel-gridiron-v32';
-const CACHE_NAME = CACHE_VERSION;
-
-const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
+// Pixel Gridiron — Service Worker v34 (FINAL)
+const CACHE_VERSION = "pixel-gridiron-v34";
+const PRECACHE_URLS = [
+  "/",
+  "/index.html",
+  "/manifest.json",
 ];
 
-self.addEventListener('install', (event) => {
-  console.log('[SW v31] Installing...');
+self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => {
-        return Promise.allSettled(
-          PRECACHE_ASSETS.map((url) =>
-            cache.add(url).catch((err) => {
-              console.warn('[SW v31] Precache miss:', url, err.message);
-            })
-          )
-        );
-      })
-      .then(() => self.skipWaiting())
-      .catch((err) => console.error('[SW v31] Install failed:', err))
+    caches.open(CACHE_VERSION).then((cache) => cache.addAll(PRECACHE_URLS))
   );
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
-  console.log('[SW v31] Activating, wiping old caches...');
+self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys()
-      .then((names) => Promise.all(
-        names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))
-      ))
-      .then(() => self.clients.claim())
-      .catch((err) => console.error('[SW v31] Activate failed:', err))
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k)))
+    )
   );
+  self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
-  const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) return;
-
-  // Navigation: network-first, offline fallback
-  if (event.request.mode === 'navigate') {
+self.addEventListener("fetch", (event) => {
+  if (event.request.mode === "navigate") {
     event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            caches.open(CACHE_NAME).then((c) => c.put(event.request, response.clone()));
-          }
-          return response;
-        })
-        .catch(() =>
-          caches.match('/index.html').then((r) => r || new Response('Offline', { status: 503 }))
-        )
+      fetch(event.request).catch(() =>
+        caches.match("/index.html").then((r) => r ?? new Response("Offline", { status: 503 }))
+      )
     );
     return;
   }
-
-  // Assets: cache-first, network fallback
   event.respondWith(
-    caches.open(CACHE_NAME).then((cache) =>
-      cache.match(event.request).then((cached) => {
-        const network = fetch(event.request)
-          .then((res) => {
-            if (res.ok) cache.put(event.request, res.clone()).catch(() => {});
-            return res;
-          })
-          .catch(() => new Response('', { status: 408 }));
-        return cached || network;
-      })
-    )
+    caches.match(event.request).then((cached) => {
+      const net = fetch(event.request)
+        .then((res) => {
+          if (res.ok) {
+            caches.open(CACHE_VERSION).then((c) => c.put(event.request, res.clone()));
+          }
+          return res;
+        })
+        .catch(() => cached ?? new Response("Offline", { status: 503 }));
+      return cached ?? net;
+    })
   );
 });
 
-self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
-  if (event.data?.type === 'GET_VERSION') event.ports[0]?.postMessage({ version: CACHE_VERSION });
+self.addEventListener("message", (event) => {
+  if (event.data === "SKIP_WAITING") self.skipWaiting();
 });

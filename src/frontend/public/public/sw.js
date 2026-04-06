@@ -1,73 +1,51 @@
-// Pixel Gridiron Service Worker
-// Bump CACHE_VERSION every deploy to bust old caches
-const CACHE_VERSION = 'pixel-gridiron-v22';
-const CACHE_NAME = CACHE_VERSION;
+// Pixel Gridiron — Service Worker v34 (FINAL)
+const CACHE_VERSION = "pixel-gridiron-v34";
+const PRECACHE_URLS = [
+  "/",
+  "/index.html",
+  "/manifest.json",
+];
 
-// On install: activate immediately, don't wait for old SW to die
-self.addEventListener('install', (event) => {
-  event.waitUntil(self.skipWaiting());
-});
-
-// On activate: delete every cache that isn't the current version, then claim clients
-self.addEventListener('activate', (event) => {
+self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames
-          .filter((name) => name !== CACHE_NAME)
-          .map((name) => {
-            console.log('[SW] Deleting old cache:', name);
-            return caches.delete(name);
-          })
-      );
-    }).then(() => self.clients.claim())
+    caches.open(CACHE_VERSION).then((cache) => cache.addAll(PRECACHE_URLS))
   );
+  self.skipWaiting();
 });
 
-// Fetch: network-first for HTML/JS/CSS, cache-first for static assets
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
 
-  // Skip non-GET and cross-origin requests
-  if (event.request.method !== 'GET') return;
-  if (url.origin !== self.location.origin) return;
-
-  // Network-first for navigation (HTML pages)
-  if (event.request.mode === 'navigate') {
+self.addEventListener("fetch", (event) => {
+  if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request).catch(() =>
-        caches.match(event.request)
+        caches.match("/index.html").then((r) => r ?? new Response("Offline", { status: 503 }))
       )
     );
     return;
   }
-
-  // Cache-first for static assets (images, fonts, icons)
-  if (url.pathname.match(/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf)$/)) {
-    event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
-        cache.match(event.request).then((cached) => {
-          if (cached) return cached;
-          return fetch(event.request).then((response) => {
-            cache.put(event.request, response.clone());
-            return response;
-          });
-        })
-      )
-    );
-    return;
-  }
-
-  // Network-first for everything else (JS, CSS, API calls)
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (response.ok) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
+    caches.match(event.request).then((cached) => {
+      const net = fetch(event.request)
+        .then((res) => {
+          if (res.ok) {
+            caches.open(CACHE_VERSION).then((c) => c.put(event.request, res.clone()));
+          }
+          return res;
+        })
+        .catch(() => cached ?? new Response("Offline", { status: 503 }));
+      return cached ?? net;
+    })
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data === "SKIP_WAITING") self.skipWaiting();
 });

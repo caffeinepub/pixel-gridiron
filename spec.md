@@ -1,47 +1,39 @@
 # Pixel Gridiron
 
 ## Current State
-V21 ships a Three.js game with modules: GameCanvas.tsx, movement.ts, spawner.ts, collision.ts, renderer.ts, sw.js v21.
-Core bugs identified via full audit:
-- RAF loop gets recreated every forceUpdate call → double RAF, orphaned handles, jank
-- `tackleFired` can fire twice; handleNextPlay races with parent state reset
-- XP/skills stored only in gameStateRef — if App.tsx doesn't copy back to profile between plays, progression is silently lost
-- Lane chaining: double-tap mid-slide snaps back to origin instead of chaining
-- Speed cap formula: MAX_SPEED unreachable until skill rank 13+ (feels weak throughout game)
-- Tile floor scroll has phase discontinuity (periodic floor pop visual jank)
-- Float text sprites are index-keyed not ID-keyed — wrong text shown after array shifts
-- Camera double-smoothed follow produces twitch on lane commit frame
-- Stride animation is frame-rate-dependent not time-based
-- buildTileMaterial leaks 100 material instances per stage change
-- collision.ts float positions use canvas-pixel coords that renderer ignores
+- v33 deployed. Pure 2D Canvas renderer, player GIF as DOM img overlay.
+- Renderer draws a perspective floor with lane lines converging at horizon.
+- Collision uses worldZ float comparison (worldZ < COLLISION_Z) — ghost tackle bug persists.
+- Grace period (1.5s) added to mask the bug but doesn't fix it.
+- Player gets tackled on first hit, no multi-hit down system.
+- No snap sequence (READY/SET/GO) — play starts immediately on button press.
+- Service worker at v33.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Stable float ID counter so float sprites never mismatch text
-- XP/skill/level copy-back from gameStateRef into App profile on every play end
-- Time-based stride animation (uses elapsed seconds, not frame count)
-- Lane-chain support: queuing next target lane mid-slide rather than restarting from origin
+- Perspective trapezoid renderer: vanishing point top-center, 5 lanes as trapezoids, checkerboard turf. Each tile row is a horizontal strip, wider toward player, tiles appear as trapezoids.
+- Tile-row crossing collision: player current lane (integer 0-4) matched against tile value at the row the player just entered. No worldZ float math. Fire when tileRow === currentMapRow.
+- 3-hit down system: player takes 3 hits before play ends. Each hit shows stagger/flash, game continues.
+- READY → SET → GO snap sequence on single button (same button cycles states). Idle until GO.
+- SW bumped to v34.
 
 ### Modify
-- GameCanvas.tsx: move `loop` out of React render cycle; use a stable ref for the RAF callback; forceUpdate only triggers overlay re-render, not loop restart
-- GameCanvas.tsx: `tackleFired` guard tightened; handleNextPlay waits for parent reset via callback promise or sequential setState
-- movement.ts: fix speed cap so turbo feels impactful at all skill levels; fix lane chain logic
-- renderer.ts: fix tile scroll formula (remove 1.2 multiplier); key float sprites by stable ft.id not array index; remove material leak in buildTileMaterial; fix camera to single-layer smoothing
-- spawner.ts: endzone check full row, not just row[0]; guard against infinite map loop-back
-- collision.ts: remove laneX() call for float positioning (renderer uses cameraPivotX anyway)
-- sw.js: bump to pixel-gridiron-v22
+- renderer.ts: replace worldZToDepth/laneFracAtDepth perspective with proper trapezoid row-based rendering. Each visible tile row gets correct trapezoid geometry.
+- collision.ts: remove worldZ-based checks, replace with tile-row crossing trigger. Track hitsThisPlay, end play only after 3 hits.
+- movement.ts: add snapPhase state (ready/set/go). Field only advances when snapPhase=go.
+- spawner.ts: obstacles appear at correct visual tile rows, not worldZ distances.
+- game.ts: add hitsThisPlay, snapPhase, remove GRACE_PERIOD dependency.
+- sw.js: bump CACHE_VERSION to pixel-gridiron-v34.
 
 ### Remove
-- Dead `yardsToGo === undefined` guard in movement.ts
-- Orphaned canvas-pixel `ft.x` assignment in collision.ts (unused by renderer)
-- 1.2 scroll multiplier causing tile floor pop
+- GRACE_PERIOD workaround in collision.ts.
+- worldZ float collision comparison.
 
 ## Implementation Plan
-1. Rewrite GameCanvas.tsx with stable RAF ref pattern (loop stored in rafCallbackRef, never recreated)
-2. Fix movement.ts: speed cap, lane chaining, time-based stride, remove dead guard
-3. Fix renderer.ts: scroll formula, float ID keying, single-layer camera, material dispose
-4. Fix spawner.ts: full endzone row check
-5. Fix collision.ts: remove unused pixel-coord float positions
-6. Bump sw.js to v22
-7. Validate build
+1. Update sw.js to v34 (cache bust).
+2. Rewrite renderer.ts: trapezoid perspective, 5 lanes, tile rows as trapezoid strips.
+3. Rewrite collision.ts: tile-row crossing, 3-hit down system.
+4. Update movement.ts: READY/SET/GO snap sequence gating.
+5. Update game.ts types: add hitsThisPlay, snapPhase.
+6. Update GameCanvas.tsx: snap button UI (shows READY/SET/GO text), wire new collision/movement.

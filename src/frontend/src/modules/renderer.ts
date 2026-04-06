@@ -1,75 +1,79 @@
 /**
- * renderer.ts v32 — Pure 2D Canvas renderer. No Three.js.
- * v31: GIF sprites are DOM <img> elements positioned by the GameCanvas layer;
- *      the canvas handles field, obstacles, HUD, and fallback player only.
- *      Exports lastPlayerPos so GameCanvas can sync the sprite img position.
- * Scrolling perspective floor, sprite player, emoji obstacles, HUD floats.
+ * renderer.ts v34 — Pure 2D Canvas, proper perspective trapezoid field.
+ * - Upside-down V field: vanishing point top-center, 5 lanes spread wide at bottom
+ * - Tile rows rendered as trapezoid strips with checkerboard turf
+ * - Obstacles sized and positioned by depth (worldZ → screen depth)
+ * - Player drawn at depth=1.0 (bottom of field)
  */
 import type { GameState } from "../types/game";
 
-// ── Layout constants ─────────────────────────────────────────────────────────
-const HORIZON_Y = 0.04; // horizon very near top (4% down)
-const PLAYER_Y_FRAC = 0.9; // player sits at 90% down (near bottom of canvas, above controls)
-// vanishing point at horizontal center: 0.5 (used implicitly in lane fracs)
+// ── Field geometry constants ──────────────────────────────────────────────────
+// Horizon bounds (fraction of W): 6 lines for 5 lanes, narrow at top
+const HOR_BOUNDS = [0.35, 0.41, 0.47, 0.53, 0.59, 0.65] as const;
+// Bottom bounds (fraction of W): 6 lines for 5 lanes, full width at bottom
+const BOT_BOUNDS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0] as const;
 
-// Lane X positions at the bottom edge (0..1 of canvas width)
-const LANE_BOT_FRAC = [0.08, 0.26, 0.5, 0.74, 0.92] as const;
-// Lane X positions at the horizon (converge)
-const LANE_HOR_FRAC = [0.32, 0.41, 0.5, 0.59, 0.68] as const;
+const HORIZON_Y_FRAC = 0.05;
+const PLAYER_Y_FRAC = 0.88;
 
-// Obstacle rendering depth band: 0=horizon, 1=player row
-const OBS_SPAWN_DEPTH = 0.04; // start tiny at horizon edge
-const OBS_CULL_DEPTH = 1.05; // remove after passing player
+const SPAWN_WORLD_Z = 20; // matches game.ts SPAWN_Z
+const VISIBLE_ROWS = 22;
 
-// How far an obstacle at worldZ=0 (player position) is rendered
-// worldZ in game.ts: 0=player, positive=ahead. We convert to depth 0..1.
-const SPAWN_WORLD_Z = 12; // matches game.ts SPAWN_Z
-
-function worldZToDepth(worldZ: number): number {
-  const d = 1 - worldZ / SPAWN_WORLD_Z;
-  return Math.max(OBS_SPAWN_DEPTH, Math.min(OBS_CULL_DEPTH, d));
-}
-
-// Lerp lane fraction at a given depth
-function laneFracAtDepth(lane: number, depth: number): number {
-  const bot = LANE_BOT_FRAC[Math.round(lane)] ?? LANE_BOT_FRAC[2];
-  const hor = LANE_HOR_FRAC[Math.round(lane)] ?? LANE_HOR_FRAC[2];
-  return hor + (bot - hor) * depth;
-}
-
-// ── Stage colors ─────────────────────────────────────────────────────────────
+// Stage palettes
 const STAGE_COLORS: Record<
   string,
-  { sky: string; dark: string; light: string; line: string }
+  {
+    sky: string;
+    darkTile: string;
+    lightTile: string;
+    line: string;
+    endzoneA: string;
+    endzoneB: string;
+  }
 > = {
   HighSchool: {
-    sky: "#5ba3dc",
-    dark: "#2d8020",
-    light: "#3a9a2a",
-    line: "#ffffffcc",
+    sky: "#4a90d9",
+    darkTile: "#2d6a1f",
+    lightTile: "#35801f",
+    line: "rgba(255,255,255,0.45)",
+    endzoneA: "#b8860b",
+    endzoneB: "#ffd700",
   },
   College: {
-    sky: "#1a0800",
-    dark: "#2a7a20",
-    light: "#1f6018",
-    line: "#ffd700cc",
+    sky: "#1a0a00",
+    darkTile: "#1e5010",
+    lightTile: "#2a6818",
+    line: "rgba(255,215,0,0.5)",
+    endzoneA: "#4a2200",
+    endzoneB: "#c87830",
   },
-  Pro: { sky: "#02020f", dark: "#143a18", light: "#1a4820", line: "#ffffffaa" },
+  Pro: {
+    sky: "#02020f",
+    darkTile: "#0e2e12",
+    lightTile: "#163a1a",
+    line: "rgba(255,255,255,0.38)",
+    endzoneA: "#1a1a50",
+    endzoneB: "#3030a0",
+  },
   SuperBowl: {
     sky: "#08001a",
-    dark: "#1a5028",
-    light: "#204030",
-    line: "#ffd700cc",
+    darkTile: "#1a4020",
+    lightTile: "#203830",
+    line: "rgba(255,215,0,0.55)",
+    endzoneA: "#2a1a00",
+    endzoneB: "#c89820",
   },
   HallOfFame: {
     sky: "#1a0030",
-    dark: "#1e4028",
-    light: "#283830",
-    line: "#ffd700ff",
+    darkTile: "#1a3020",
+    lightTile: "#243828",
+    line: "rgba(255,215,0,0.7)",
+    endzoneA: "#3a1000",
+    endzoneB: "#ff8c00",
   },
 };
 
-// ── Defender colors ───────────────────────────────────────────────────────────
+// Defender colors
 const DEF_COLORS: Record<
   string,
   { body: string; helmet: string; glow: string; label: string }
@@ -106,69 +110,116 @@ const DEF_COLORS: Record<
   },
 };
 
-// ── Player position — exported so GameCanvas can sync DOM img overlay ─────────
 export interface PlayerCanvasPos {
-  x: number; // canvas pixel x (center of player)
-  y: number; // canvas pixel y (bottom of player)
-  size: number; // height of sprite slot in pixels
+  x: number;
+  y: number;
+  size: number;
 }
 
-// ── Floor tile scroll ─────────────────────────────────────────────────────────
+// ── Geometry helpers ──────────────────────────────────────────────────────────
+
+/** Interpolate horizon/bottom bound at a given depth (0=horizon, 1=bottom) */
+function laneLeft(laneIdx: number, depth: number, W: number): number {
+  return (
+    (HOR_BOUNDS[laneIdx] +
+      (BOT_BOUNDS[laneIdx] - HOR_BOUNDS[laneIdx]) * depth) *
+    W
+  );
+}
+function laneRight(laneIdx: number, depth: number, W: number): number {
+  return (
+    (HOR_BOUNDS[laneIdx + 1] +
+      (BOT_BOUNDS[laneIdx + 1] - HOR_BOUNDS[laneIdx + 1]) * depth) *
+    W
+  );
+}
+function laneCenterX(lane: number, depth: number, W: number): number {
+  return (laneLeft(lane, depth, W) + laneRight(lane, depth, W)) / 2;
+}
+function depthToY(depth: number, hz: number, bottomY: number): number {
+  return hz + (bottomY - hz) * depth;
+}
+function worldZToDepth(worldZ: number): number {
+  return Math.max(0.01, Math.min(1.0, 1 - worldZ / SPAWN_WORLD_Z));
+}
+
+// ── Sky ───────────────────────────────────────────────────────────────────────
+function drawSky(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  hz: number,
+  stage: (typeof STAGE_COLORS)[string],
+) {
+  const grad = ctx.createLinearGradient(0, 0, 0, hz);
+  grad.addColorStop(0, darken(stage.sky, 20));
+  grad.addColorStop(1, lighten(stage.sky, 25));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, hz);
+}
+
+// ── Tile floor (trapezoid rows with checkerboard) ─────────────────────────────
 function drawFloor(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
+  hz: number,
+  bottomY: number,
   gs: GameState,
+  stage: (typeof STAGE_COLORS)[string],
+  fieldMap: readonly string[],
 ) {
-  const hz = H * HORIZON_Y;
-  const stage = STAGE_COLORS[gs.careerStage] ?? STAGE_COLORS.HighSchool;
+  // Scroll offset so tiles appear to move toward player
+  const scrollFrac = (gs.fieldScroll * 0.18) % 1;
 
-  // Sky gradient
-  const skyGrad = ctx.createLinearGradient(0, 0, 0, hz);
-  skyGrad.addColorStop(0, stage.sky);
-  skyGrad.addColorStop(1, lighten(stage.sky, 30));
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, W, hz);
+  for (let row = 0; row < VISIBLE_ROWS; row++) {
+    // depth at top and bottom of this tile strip
+    const depthTop = Math.max(0.005, (row + scrollFrac) / VISIBLE_ROWS);
+    const depthBot = Math.min(1.0, (row + 1 + scrollFrac) / VISIBLE_ROWS);
+    if (depthTop >= 1.0) continue;
 
-  // Ground gradient (below horizon)
-  const gndGrad = ctx.createLinearGradient(0, hz, 0, H);
-  gndGrad.addColorStop(0, stage.dark);
-  gndGrad.addColorStop(1, lighten(stage.dark, 15));
-  ctx.fillStyle = gndGrad;
-  ctx.fillRect(0, hz, W, H - hz);
+    const yTop = depthToY(depthTop, hz, bottomY);
+    const yBot = depthToY(depthBot, hz, bottomY);
+    if (yBot < hz) continue;
 
-  // Perspective yard lines — scrolling based on fieldScroll
-  const TILE_DEPTH_STEP = 0.065;
-  const scroll = (gs.fieldScroll % (SPAWN_WORLD_Z / 8)) / (SPAWN_WORLD_Z / 8);
+    // Determine map row index this tile row corresponds to
+    const mapRowIdx = (gs.mapRow + row) % Math.max(1, fieldMap.length);
+    const mapRow = fieldMap[mapRowIdx] ?? "00000";
+    const isEndzone = mapRow.split("").every((c) => c === "8" || c === "0");
 
+    for (let lane = 0; lane < 5; lane++) {
+      const xl = laneLeft(lane, depthTop, W);
+      const xr = laneRight(lane, depthTop, W);
+      const xlB = laneLeft(lane, depthBot, W);
+      const xrB = laneRight(lane, depthBot, W);
+
+      // Checkerboard: alternate by (row + lane) parity
+      const checker = (row + lane) % 2 === 0;
+
+      let color: string;
+      if (isEndzone) {
+        color = checker ? stage.endzoneA : stage.endzoneB;
+      } else {
+        color = checker ? stage.darkTile : stage.lightTile;
+      }
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(xl, yTop);
+      ctx.lineTo(xr, yTop);
+      ctx.lineTo(xrB, yBot);
+      ctx.lineTo(xlB, yBot);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Lane lines: 6 perspective lines from horizon to bottom
   ctx.save();
   ctx.strokeStyle = stage.line;
-  ctx.lineWidth = 1;
-  ctx.globalAlpha = 0.35;
-
-  for (let i = 0; i < 16; i++) {
-    const depth = (i * TILE_DEPTH_STEP + scroll * TILE_DEPTH_STEP) % 1.0;
-    if (depth < 0.01) continue;
-    const y = hz + (H - hz) * depth;
-    ctx.lineWidth = depth * 2.5;
-    ctx.globalAlpha = 0.15 + depth * 0.3;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(W, y);
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  // Lane separator lines
-  ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.18)";
   ctx.lineWidth = 1.5;
-  const LANE_BOUNDS_BOT = [0.0, 0.17, 0.35, 0.65, 0.83, 1.0];
-  const LANE_BOUNDS_HOR = [0.27, 0.36, 0.45, 0.55, 0.64, 0.73];
   for (let i = 0; i < 6; i++) {
-    const bx = W * LANE_BOUNDS_BOT[i];
-    const hx = W * LANE_BOUNDS_HOR[i];
+    const hx = HOR_BOUNDS[i] * W;
+    const bx = BOT_BOUNDS[i] * W;
     ctx.beginPath();
     ctx.moveTo(hx, hz);
     ctx.lineTo(bx, H);
@@ -176,22 +227,18 @@ function drawFloor(
   }
   ctx.restore();
 
-  // Checkerboard turf strips
-  const stripeScroll = (gs.fieldScroll * 1.8) % 1;
-  const stripeCount = 20;
-  for (let i = 0; i < stripeCount; i++) {
-    const depth0 = (i / stripeCount + stripeScroll / stripeCount) % 1.0;
-    const depth1 = ((i + 0.5) / stripeCount + stripeScroll / stripeCount) % 1.0;
-    if (depth0 > depth1) continue;
-    const y0 = hz + (H - hz) * depth0;
-    const y1 = hz + (H - hz) * depth1;
-    if (i % 2 === 0) continue;
-    ctx.fillStyle = "rgba(0,0,0,0.06)";
-    ctx.fillRect(0, y0, W, y1 - y0);
-  }
+  // Horizon line
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, hz);
+  ctx.lineTo(W, hz);
+  ctx.stroke();
+  ctx.restore();
 }
 
-// ── Spin arc effect ───────────────────────────────────────────────────────────
+// ── Spin arc ──────────────────────────────────────────────────────────────────
 function drawSpinEffect(
   ctx: CanvasRenderingContext2D,
   px: number,
@@ -202,17 +249,14 @@ function drawSpinEffect(
   const SPIN_DURATION = 1.2;
   const alpha = (gs.spinTimer / SPIN_DURATION) * 0.85;
   if (alpha <= 0) return;
-
   const arcCy = py - size * 0.18;
   const sweep = Math.PI * 1.5;
   const startAngle = gs.spinAngle;
-
-  const arcs: Array<{ r: number; w: number; a: number }> = [
+  const arcs = [
     { r: size * 0.22, w: size * 0.07, a: alpha },
     { r: size * 0.28, w: size * 0.05, a: alpha * 0.7 },
     { r: size * 0.35, w: size * 0.03, a: alpha * 0.4 },
   ];
-
   ctx.save();
   ctx.lineCap = "round";
   for (const arc of arcs) {
@@ -222,46 +266,35 @@ function drawSpinEffect(
     ctx.lineWidth = arc.w;
     ctx.stroke();
   }
-
-  const sparkCount = 5;
-  for (let i = 0; i < sparkCount; i++) {
-    const a = startAngle + (i / sparkCount) * sweep;
-    const sx = px + Math.cos(a) * size * 0.35;
-    const sy = arcCy + Math.sin(a) * size * 0.35;
-    ctx.beginPath();
-    ctx.arc(sx, sy, size * 0.025, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,240,100,${alpha * 0.8})`;
-    ctx.fill();
-  }
   ctx.restore();
 }
 
-// ── Player canvas draw (shadow + fallback only — GIF handled by DOM overlay) ──
+// ── Player shadow + position (GIF is DOM overlay) ─────────────────────────────
 function drawPlayer(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
+  _hz: number,
+  bottomY: number,
   gs: GameState,
 ): PlayerCanvasPos {
-  const playerDepth = 1.0;
+  const depth = 1.0;
   const lane = gs.fromLane + (gs.targetLane - gs.fromLane) * gs.laneT;
-  const px = W * laneFracAtDepth(lane, playerDepth);
-  const py = H * PLAYER_Y_FRAC - gs.jumpY * 0.18;
-  const size = H * 0.14;
+  const px = laneCenterX(lane, depth, W);
+  const py = bottomY - gs.jumpY * 0.15;
+  const size = H * 0.12;
 
-  if (gs.spinning) {
-    drawSpinEffect(ctx, px, py, size, gs);
-  }
+  if (gs.spinning) drawSpinEffect(ctx, px, py, size, gs);
 
-  // Ground shadow — always drawn on canvas
+  // Ground shadow
   ctx.save();
-  ctx.globalAlpha = 0.35;
+  ctx.globalAlpha = 0.38;
   ctx.fillStyle = "#000";
   ctx.beginPath();
   ctx.ellipse(
     px,
-    H * PLAYER_Y_FRAC + size * 0.55,
-    size * 0.38,
+    bottomY + size * 0.08,
+    size * 0.42,
     size * 0.1,
     0,
     0,
@@ -269,9 +302,6 @@ function drawPlayer(
   );
   ctx.fill();
   ctx.restore();
-
-  // Canvas fallback (only used when no GIF is mounted by GameCanvas)
-  // We skip drawing here — GameCanvas owns the sprite.
 
   return { x: px, y: py, size };
 }
@@ -290,6 +320,7 @@ function drawPlayerFallback(
       ? "#c03000"
       : "#3FAE5A";
 
+  // torso
   ctx.fillStyle = jerseyColor;
   ctx.beginPath();
   ctx.roundRect(
@@ -301,6 +332,7 @@ function drawPlayerFallback(
   );
   ctx.fill();
 
+  // helmet
   ctx.fillStyle = "#1a1a1a";
   ctx.beginPath();
   ctx.arc(px, py - size * 0.6, size * 0.18, 0, Math.PI * 2);
@@ -311,17 +343,12 @@ function drawPlayerFallback(
   ctx.arc(px + size * 0.06, py - size * 0.55, size * 0.1, -0.3, 0.8);
   ctx.stroke();
 
-  const spinFrac = gs.spinning ? gs.spinTimer / 1.2 : 0;
-  const armFlare = gs.spinning
-    ? 1.0 + Math.sin(spinFrac * Math.PI) * 0.55
-    : 1.0;
-  const legCross = gs.spinning ? Math.sin(gs.spinAngle) * size * 0.08 : 0;
+  // legs
   const stride = gs.spinning ? 0 : Math.sin(t * 12) * size * 0.15;
-
   ctx.fillStyle = "#1a2a3a";
   ctx.beginPath();
   ctx.roundRect(
-    px - size * 0.12 + legCross,
+    px - size * 0.12,
     py - size * 0.2,
     size * 0.1,
     size * 0.3 + stride,
@@ -330,7 +357,7 @@ function drawPlayerFallback(
   ctx.fill();
   ctx.beginPath();
   ctx.roundRect(
-    px + size * 0.02 - legCross,
+    px + size * 0.02,
     py - size * 0.2,
     size * 0.1,
     size * 0.3 - stride,
@@ -338,61 +365,25 @@ function drawPlayerFallback(
   );
   ctx.fill();
 
-  const armSpread = size * 0.3 * armFlare;
+  // arms
   const armSwing = gs.spinning ? 0 : Math.sin(t * 12 + 1) * size * 0.1;
   ctx.strokeStyle = jerseyColor;
   ctx.lineWidth = size * 0.07;
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(px - size * 0.18, py - size * 0.45);
-  ctx.lineTo(px - armSpread, py - size * 0.2 + armSwing);
+  ctx.lineTo(px - size * 0.3, py - size * 0.2 + armSwing);
   ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(px + size * 0.18, py - size * 0.45);
-  ctx.lineTo(px + armSpread, py - size * 0.2 - armSwing);
+  ctx.lineTo(px + size * 0.3, py - size * 0.2 - armSwing);
   ctx.stroke();
 
-  ctx.fillStyle = lighten(jerseyColor, 20);
-  ctx.beginPath();
-  ctx.ellipse(
-    px - size * 0.2 * armFlare,
-    py - size * 0.5,
-    size * 0.1 * Math.min(armFlare, 1.3),
-    size * 0.06,
-    -0.3,
-    0,
-    Math.PI * 2,
-  );
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(
-    px + size * 0.2 * armFlare,
-    py - size * 0.5,
-    size * 0.1 * Math.min(armFlare, 1.3),
-    size * 0.06,
-    0.3,
-    0,
-    Math.PI * 2,
-  );
-  ctx.fill();
-
+  // jersey number
   ctx.fillStyle = "#fff";
   ctx.font = `bold ${size * 0.16}px monospace`;
   ctx.textAlign = "center";
   ctx.fillText(String(gs.jerseyNumber || 32), px, py - size * 0.38);
-
-  if (gs.turboActive) {
-    ctx.save();
-    ctx.globalAlpha = 0.3 + Math.sin(t * 10) * 0.2;
-    const grd = ctx.createRadialGradient(px, py, 0, px, py, size * 0.8);
-    grd.addColorStop(0, "#ff6600");
-    grd.addColorStop(1, "transparent");
-    ctx.fillStyle = grd;
-    ctx.beginPath();
-    ctx.arc(px, py, size * 0.8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
 }
 
 // ── Obstacle drawing ──────────────────────────────────────────────────────────
@@ -400,16 +391,17 @@ function drawObstacle(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
+  hz: number,
+  bottomY: number,
   obs: import("../types/game").Obstacle,
   gs: GameState,
 ) {
-  const hz = H * HORIZON_Y;
   const depth = worldZToDepth(obs.worldZ);
-  if (depth < OBS_SPAWN_DEPTH || depth > OBS_CULL_DEPTH) return;
+  if (depth < 0.02 || depth > 1.05) return;
 
-  const ox = W * laneFracAtDepth(obs.lane, depth);
-  const oy = hz + (H * PLAYER_Y_FRAC - hz) * depth;
-  const size = H * 0.11 * depth;
+  const ox = laneCenterX(obs.lane, depth, W);
+  const oy = depthToY(depth, hz, bottomY);
+  const size = H * 0.1 * depth;
   if (size < 4) return;
 
   ctx.save();
@@ -460,17 +452,6 @@ function drawObstacle(
     ctx.moveTo(ox, oy - size * 0.45);
     ctx.lineTo(ox, oy + size * 0.45);
     ctx.stroke();
-    ctx.fillStyle = "rgba(0,0,0,0.4)";
-    for (const [dx, dy] of [
-      [-0.3, -0.3],
-      [0.3, -0.3],
-      [-0.3, 0.3],
-      [0.3, 0.3],
-    ]) {
-      ctx.beginPath();
-      ctx.arc(ox + dx * size, oy + dy * size, size * 0.05, 0, Math.PI * 2);
-      ctx.fill();
-    }
     if (obs.powerUp) {
       ctx.font = `bold ${size * 0.35}px monospace`;
       ctx.textAlign = "center";
@@ -501,6 +482,7 @@ function drawDefender(
   const col = DEF_COLORS[type] ?? DEF_COLORS.lb;
   const t = gs.elapsedTime;
 
+  // glow aura
   const grd = ctx.createRadialGradient(ox, oy, 0, ox, oy, size * 1.0);
   grd.addColorStop(0, col.glow);
   grd.addColorStop(1, "transparent");
@@ -516,11 +498,13 @@ function drawDefender(
   ctx.translate(ox, oy);
   ctx.scale(scaleX, scaleY);
 
+  // torso
   ctx.fillStyle = col.body;
   ctx.beginPath();
   ctx.roundRect(-size * 0.2, -size * 0.55, size * 0.4, size * 0.38, 4);
   ctx.fill();
 
+  // helmet
   ctx.fillStyle = col.helmet;
   ctx.beginPath();
   ctx.arc(0, -size * 0.58, size * 0.2, 0, Math.PI * 2);
@@ -531,11 +515,8 @@ function drawDefender(
   ctx.moveTo(-size * 0.14, -size * 0.52);
   ctx.lineTo(size * 0.14, -size * 0.52);
   ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-size * 0.12, -size * 0.44);
-  ctx.lineTo(size * 0.12, -size * 0.44);
-  ctx.stroke();
 
+  // legs
   const stride = Math.sin(t * 10 + ox) * size * 0.12;
   ctx.fillStyle = "#222";
   ctx.beginPath();
@@ -557,6 +538,7 @@ function drawDefender(
   );
   ctx.fill();
 
+  // arms
   ctx.strokeStyle = col.body;
   ctx.lineWidth = size * 0.08;
   ctx.lineCap = "round";
@@ -569,6 +551,7 @@ function drawDefender(
   ctx.lineTo(size * 0.38, -size * 0.2);
   ctx.stroke();
 
+  // label
   ctx.fillStyle = "#fff";
   ctx.font = `bold ${size * 0.22}px monospace`;
   ctx.textAlign = "center";
@@ -601,7 +584,6 @@ function drawFloats(
   }
 }
 
-// ── Down & distance HUD ───────────────────────────────────────────────────────
 function drawDownHud(
   ctx: CanvasRenderingContext2D,
   W: number,
@@ -620,7 +602,31 @@ function drawDownHud(
   ctx.restore();
 }
 
-// ── Coach tip ─────────────────────────────────────────────────────────────────
+function drawSnapHud(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  gs: GameState,
+) {
+  if (gs.phase !== "idle" || !gs.snapPhase) return;
+  const labels: Record<string, string> = {
+    ready: "READY...",
+    set: "SET...",
+  };
+  const label = labels[gs.snapPhase];
+  if (!label) return;
+  ctx.save();
+  ctx.font = `bold ${W * 0.06}px monospace`;
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillText(label, W * 0.5 + 1, H * 0.42 + 1);
+  ctx.fillStyle = "#FFD700";
+  ctx.shadowColor = "#FFD700";
+  ctx.shadowBlur = 12;
+  ctx.fillText(label, W * 0.5, H * 0.42);
+  ctx.restore();
+}
+
 function drawTutorial(
   ctx: CanvasRenderingContext2D,
   W: number,
@@ -642,12 +648,19 @@ function drawTutorial(
   ctx.restore();
 }
 
-// ── Utility ───────────────────────────────────────────────────────────────────
 function lighten(hex: string, pct: number): string {
   const n = Number.parseInt(hex.replace("#", ""), 16);
   const r = Math.min(255, ((n >> 16) & 0xff) + pct);
   const g = Math.min(255, ((n >> 8) & 0xff) + pct);
   const b = Math.min(255, (n & 0xff) + pct);
+  return `rgb(${r},${g},${b})`;
+}
+
+function darken(hex: string, pct: number): string {
+  const n = Number.parseInt(hex.replace("#", ""), 16);
+  const r = Math.max(0, ((n >> 16) & 0xff) - pct);
+  const g = Math.max(0, ((n >> 8) & 0xff) - pct);
+  const b = Math.max(0, (n & 0xff) - pct);
   return `rgb(${r},${g},${b})`;
 }
 
@@ -657,9 +670,7 @@ export default class Renderer2D {
   private ctx: CanvasRenderingContext2D | null = null;
   W = 0;
   H = 0;
-  // Set to false when GameCanvas has mounted a GIF img overlay
   useCanvasFallback = true;
-  // Last computed player position — read by GameCanvas each frame
   lastPlayerPos: PlayerCanvasPos = { x: 0, y: 0, size: 0 };
 
   init(container: HTMLDivElement, w: number, h: number) {
@@ -693,25 +704,53 @@ export default class Renderer2D {
     const H = this.H;
 
     ctx.clearRect(0, 0, W, H);
-    drawFloor(ctx, W, H, gs);
 
-    const sorted = [...gs.obstacles].sort((a, b) => b.worldZ - a.worldZ);
-    for (const obs of sorted) {
-      drawObstacle(ctx, W, H, obs, gs);
+    const stage = STAGE_COLORS[gs.careerStage] ?? STAGE_COLORS.HighSchool;
+    const hz = H * HORIZON_Y_FRAC;
+    const bottomY = H * PLAYER_Y_FRAC;
+
+    // Get field map for endzone detection in floor tiles
+    // Import dynamically to avoid circular deps — use inline logic
+    const fieldMapProxy: readonly string[] =
+      gs.obstacles.length >= 0
+        ? (() => {
+            // Fallback: all open rows — real map handled by spawner
+            // We only need this for endzone tile coloring
+            return ["00000"] as readonly string[];
+          })()
+        : ["00000"];
+
+    // Sky
+    drawSky(ctx, W, hz, stage);
+
+    // Field floor with trapezoid tiles
+    drawFloor(ctx, W, H, hz, bottomY, gs, stage, fieldMapProxy);
+
+    const activePlay = gs.phase === "playing" || gs.phase === "tackled";
+
+    if (activePlay) {
+      // Obstacles: sort back-to-front (higher worldZ = farther = draw first)
+      const sorted = [...gs.obstacles].sort((a, b) => b.worldZ - a.worldZ);
+      for (const obs of sorted) {
+        drawObstacle(ctx, W, H, hz, bottomY, obs, gs);
+      }
+
+      // Player shadow + position
+      const pos = drawPlayer(ctx, W, H, hz, bottomY, gs);
+      this.lastPlayerPos = pos;
+
+      if (this.useCanvasFallback) {
+        drawPlayerFallback(ctx, pos.x, pos.y, pos.size, gs);
+      }
+
+      drawFloats(ctx, W, H, gs);
+      drawDownHud(ctx, W, H, gs);
+      drawTutorial(ctx, W, H, gs);
+    } else {
+      // idle/paused: draw snap phase HUD if in snap sequence
+      drawSnapHud(ctx, W, H, gs);
+      this.lastPlayerPos = { x: 0, y: 0, size: 0 };
     }
-
-    // Draw player (shadow + spin arc + optionally fallback)
-    const pos = drawPlayer(ctx, W, H, gs);
-    this.lastPlayerPos = pos;
-
-    // If no GIF overlay is mounted, draw fallback
-    if (this.useCanvasFallback) {
-      drawPlayerFallback(ctx, pos.x, pos.y, pos.size, gs);
-    }
-
-    drawFloats(ctx, W, H, gs);
-    drawDownHud(ctx, W, H, gs);
-    drawTutorial(ctx, W, H, gs);
   }
 
   dispose() {

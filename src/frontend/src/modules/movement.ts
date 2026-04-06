@@ -1,10 +1,8 @@
 /**
- * movement.ts v30 — player physics, lane shifting, jump, timers, field advance.
- * FIXED v30: fromLane is now kept in sync with gs.lane on every lane commit,
- *   so collision.ts and renderer.ts both read the same interpolated position.
- * FIXED: speed cap now lets turbo feel impactful at ALL skill levels.
- * FIXED: lane chaining — mid-slide tap commits current position before changing target.
- * FIXED: stride animation is time-based (elapsedTime), not frame-count-based.
+ * movement.ts v34 — player physics, lane shifting, jump, timers, field advance.
+ * v34: Added READY/SET/GO snap sequence state.
+ *      Field only advances when gs.phase === 'playing'.
+ *      snapPhase cycles: null → ready → set → go (triggers playing).
  */
 import {
   BASE_SPEED,
@@ -17,6 +15,8 @@ import {
 } from "../types/game";
 
 export function updateMovement(gs: GameState, dt: number): void {
+  if (gs.phase !== "playing") return;
+
   // ── Speed ramp ────────────────────────────────────────────────────────────
   const burstBonus = gs.fieldZ < 5 ? (gs.skills.burst ?? 0) * 0.4 : 0;
   const speedCap = MAX_SPEED + (gs.skills.speed ?? 0) * 0.15 + burstBonus;
@@ -77,7 +77,7 @@ export function updateMovement(gs: GameState, dt: number): void {
     );
     if (gs.laneT >= 1) {
       gs.lane = gs.targetLane;
-      gs.fromLane = gs.targetLane; // ← FIXED: keep fromLane in sync
+      gs.fromLane = gs.targetLane;
       gs.laneT = 1;
     }
   }
@@ -144,6 +144,30 @@ function tickSpin(gs: GameState, dt: number) {
   }
 }
 
+/** Handle snap button press: cycles null → ready → set → go → (playing) */
+export function pressSnap(gs: GameState): void {
+  if (gs.phase === "playing") {
+    // Pause
+    gs.phase = "paused";
+    return;
+  }
+  if (gs.phase === "paused") {
+    // Resume
+    gs.phase = "playing";
+    return;
+  }
+  if (gs.phase === "idle") {
+    if (gs.snapPhase === null) {
+      gs.snapPhase = "ready";
+    } else if (gs.snapPhase === "ready") {
+      gs.snapPhase = "set";
+    } else if (gs.snapPhase === "set") {
+      gs.snapPhase = "go";
+      gs.phase = "playing";
+    }
+  }
+}
+
 /** Lane pixel positions at the bottom of the screen */
 export function laneX(lane: number): number {
   return [28, 96, 180, 264, 332][lane] ?? 180;
@@ -158,7 +182,6 @@ export function playerScreenX(gs: GameState): number {
 // ── Input handlers ────────────────────────────────────────────────────────────
 export function inputLeft(gs: GameState) {
   if (gs.laneT < 1) {
-    // Mid-slide: commit current interpolated position as new origin
     const currentLaneF = gs.fromLane + (gs.targetLane - gs.fromLane) * gs.laneT;
     const lanePositions = [0, 1, 2, 3, 4];
     const closestLane = lanePositions.reduce(
@@ -167,11 +190,11 @@ export function inputLeft(gs: GameState) {
       2,
     );
     gs.lane = closestLane;
-    gs.fromLane = closestLane; // ← FIXED
+    gs.fromLane = closestLane;
     gs.laneT = 1;
   }
   if (gs.targetLane > 0) {
-    gs.fromLane = gs.lane; // ← FIXED: set fromLane before starting new slide
+    gs.fromLane = gs.lane;
     gs.targetLane--;
     gs.laneT = 0;
   }
@@ -187,11 +210,11 @@ export function inputRight(gs: GameState) {
       2,
     );
     gs.lane = closestLane;
-    gs.fromLane = closestLane; // ← FIXED
+    gs.fromLane = closestLane;
     gs.laneT = 1;
   }
   if (gs.targetLane < 4) {
-    gs.fromLane = gs.lane; // ← FIXED: set fromLane before starting new slide
+    gs.fromLane = gs.lane;
     gs.targetLane++;
     gs.laneT = 0;
   }
